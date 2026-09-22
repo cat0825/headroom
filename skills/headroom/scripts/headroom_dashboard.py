@@ -13,35 +13,60 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import headroom  # noqa: E402
 
+ASSET_DIR = Path(__file__).resolve().parents[1] / "assets"
+IMAGE_TYPES = {
+    "/assets/brain-full.png": "image/png",
+    "/assets/brain-declining.webp": "image/webp",
+    "/assets/brain-low.png": "image/png",
+}
+
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>headroom</title><style>
 :root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#14213d;background:#f5f7fb}
 body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;box-sizing:border-box}
-.card{width:min(420px,100%);background:white;border-radius:20px;padding:28px;box-shadow:0 14px 40px #17213d18}
-h1{font-size:23px;margin:8px 0 22px}.value{font-size:56px;font-weight:750;line-height:1;color:#2563eb}
+.card{width:min(420px,100%);box-sizing:border-box;background:white;border-radius:20px;padding:28px;box-shadow:0 14px 40px #17213d18}
+.heading-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px;min-height:64px}
+.mood{flex-shrink:0}.mood img{display:block;width:64px;height:64px;object-fit:contain;border-radius:10px;background:#f5f7fb}
+h1{font-size:23px;margin:0}.value{font-size:56px;font-weight:750;line-height:1;color:#2563eb}
 .sub{color:#61708c;font-size:13px;margin-top:6px}.track{height:12px;background:#e8edf6;border-radius:99px;margin:24px 0 16px;overflow:hidden}
 .fill{height:100%;width:0;background:linear-gradient(90deg,#58c7ab,#2563eb);border-radius:99px;transition:width .35s}
 .meta{font-size:15px;line-height:1.8}.small{font-size:12px;color:#61708c;margin-top:14px}
 button{width:100%;border:0;border-radius:10px;background:#14213d;color:#fff;font:inherit;padding:12px;margin-top:24px;cursor:pointer}
 button:hover{background:#263b61}.error{color:#b42318}
 </style></head><body><main class="card">
-<h1>脑力剩余</h1>
+<div class="heading-row"><h1>脑力剩余</h1>
+<div id="mood" class="mood" hidden><img id="mood-image" alt="" width="64" height="64"></div></div>
 <div id="value" class="value">--</div><div class="sub">left</div>
 <div class="track"><div id="fill" class="fill"></div></div>
 <div id="meta" class="meta">读取中...</div><div id="updated" class="small"></div>
 <button id="refresh">刷新</button>
 </main><script>
+function updateMood(percent){
+ const picture=document.getElementById('mood-image');
+ const [file,description]=percent>=100
+  ? ['brain-full.png','脑力满格：戴耳机的狗狗']
+  : percent<30
+   ? ['brain-low.png','脑力低于30%：咆哮的狗狗']
+   : ['brain-declining.webp','脑力下降中：流泪的猫猫'];
+ const source='/assets/'+file;
+ if(picture.getAttribute('src')!==source)picture.src=source;
+ picture.alt=description;
+ document.getElementById('mood').hidden=false;
+}
 async function refresh(){
  const value=document.getElementById('value'), meta=document.getElementById('meta');
  try{const response=await fetch('/api/status',{cache:'no-store'}); const data=await response.json();
   if(!response.ok)throw Error(data.error||'读取失败');
-  value.textContent=Number(data.left_percent).toFixed(2)+'%';
-  document.getElementById('fill').style.width=Math.max(0,Math.min(100,data.left_percent))+'%';
+  const percent=data.left_percent;
+  if(typeof percent!=='number'||!Number.isFinite(percent))throw Error('脑力数据不可用');
+  value.textContent=percent.toFixed(2)+'%';
+  document.getElementById('fill').style.width=Math.max(0,Math.min(100,percent))+'%';
+  updateMood(percent);
   meta.textContent='已用 '+Number(data.spent_points).toFixed(2)+' / '+data.cap_points+' 点';
   document.getElementById('updated').textContent='最近刷新：'+new Date().toLocaleTimeString();
   meta.classList.remove('error');
- }catch(error){value.textContent='不可用';meta.textContent=error.message;meta.classList.add('error')}
+ }catch(error){value.textContent='不可用';meta.textContent=error.message;meta.classList.add('error');document.getElementById('mood').hidden=true;document.getElementById('fill').style.width='0%'}
 }
 document.getElementById('refresh').addEventListener('click',refresh);
 refresh();setInterval(refresh,10000);
@@ -64,6 +89,12 @@ def create_handler(codex_home: Path, state_path: Path):
             if self.path == "/":
                 body = PAGE.encode("utf-8")
                 content_type, status = "text/html; charset=utf-8", 200
+            elif self.path in IMAGE_TYPES:
+                try:
+                    body = (ASSET_DIR / self.path.rsplit("/", 1)[1]).read_bytes()
+                    content_type, status = IMAGE_TYPES[self.path], 200
+                except OSError:
+                    body, status, content_type = b"Not found", 404, "text/plain; charset=utf-8"
             elif self.path == "/api/status":
                 try:
                     today = datetime.now(headroom.SHANGHAI).date()
