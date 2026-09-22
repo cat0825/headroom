@@ -12,8 +12,8 @@ import os
 import socket
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
-from urllib.request import urlopen
 
 
 def plugin_root() -> Path:
@@ -22,11 +22,14 @@ def plugin_root() -> Path:
 
 
 def python_background() -> str:
-    configured = os.environ.get("HEADROOM_PYTHONW")
+    configured = os.environ.get("HEADROOM_PYTHONW") or os.environ.get("HEADROOM_PYTHON")
     if configured:
         return configured
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    return str(pythonw if pythonw.is_file() else sys.executable)
+    if sys.platform == "win32":
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.is_file():
+            return str(pythonw)
+    return sys.executable
 
 
 def codex_home() -> Path:
@@ -46,6 +49,12 @@ def scorer_path() -> Path:
     return installed if installed.is_file() else root / "scripts" / "headroom.py"
 
 
+def dashboard_path() -> Path:
+    root = plugin_root()
+    installed = root / "skills" / "headroom" / "scripts" / "headroom_dashboard.py"
+    return installed if installed.is_file() else root / "scripts" / "headroom_dashboard.py"
+
+
 def dashboard_is_up(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.3):
@@ -58,13 +67,18 @@ def start_dashboard(cwd: str | None) -> None:
     port = int(os.environ.get("HEADROOM_DASHBOARD_PORT", "8766"))
     if dashboard_is_up(port):
         return
-    dashboard = plugin_root() / "scripts" / "headroom_dashboard.py"
+    dashboard = dashboard_path()
+    if not dashboard.is_file():
+        return
     command = [python_background(), str(dashboard), "--port", str(port),
                "--state-path", str(state_path(cwd))]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=creationflags, close_fds=True)
+    try:
+        subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=creationflags, close_fds=True)
+    except OSError:
+        return
 
 
 def is_chargeable(event: dict) -> bool:
@@ -87,15 +101,52 @@ def is_chargeable(event: dict) -> bool:
     return True
 
 
+def _get_headroom_module():
+    scorer = scorer_path()
+    if not scorer.is_file():
+        return None
+    scripts_dir = str(scorer.parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        import headroom
+        return headroom
+    except Exception:
+        return None
+
+
 def charge(event: dict) -> None:
     if not is_chargeable(event):
         return
     digest = hashlib.sha256(
         f"{event['session_id']}:{event['turn_id']}".encode("utf-8")
     ).hexdigest()[:40]
+    event_id = f"hook-{digest}"
+
+    hr = _get_headroom_module()
+    if hr is not None:
+        try:
+            today = datetime.now(hr.SHANGHAI).date()
+            history_db = codex_home() / "thread_history_1.sqlite"
+            base = hr.baseline(history_db, today)
+            hr.score_event(
+                base=base,
+                as_of=today,
+                state_path=state_path(event.get("cwd")),
+                event_id=event_id,
+                origin="manual-user",
+                mode="normal",
+                backend=os.environ.get("HEADROOM_BACKEND", "mock"),
+                message=event["prompt"],
+            )
+            return
+        except Exception:
+            # Fall back to subprocess or fail open
+            pass
+
     command = [python_background(), str(scorer_path()), "--codex-home", str(codex_home()),
                "--state-path", str(state_path(event.get("cwd"))), "turn",
-               "--event-id", f"hook-{digest}", "--origin", "manual-user",
+               "--event-id", event_id, "--origin", "manual-user",
                "--mode", "normal", "--backend",
                os.environ.get("HEADROOM_BACKEND", "mock")]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

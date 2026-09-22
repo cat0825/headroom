@@ -153,6 +153,75 @@ class HeadroomTests(unittest.TestCase):
         self.assertEqual(result["left_percent"], 100)
         self.assertEqual(result["spent_points"], 0)
 
+    def test_headroom_hook_eligibility_and_charge(self):
+        hooks_dir = str(Path(__file__).resolve().parents[1] / "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        import headroom_hook
+
+        # is_chargeable checks
+        self.assertFalse(headroom_hook.is_chargeable({}))
+        self.assertFalse(headroom_hook.is_chargeable({"prompt": "", "session_id": "s1", "turn_id": "t1"}))
+        self.assertFalse(headroom_hook.is_chargeable({"prompt": "hi", "session_id": "", "turn_id": "t1"}))
+        self.assertFalse(headroom_hook.is_chargeable({"prompt": "hi", "session_id": "s1", "turn_id": "t1", "permission_mode": "plan"}))
+        self.assertFalse(headroom_hook.is_chargeable({"prompt": "hi", "session_id": "s1", "turn_id": "t1", "origin": "scheduled"}))
+        self.assertTrue(headroom_hook.is_chargeable({"prompt": "hi", "session_id": "s1", "turn_id": "t1"}))
+
+        # charge execution with direct module loading
+        self.insert("2026-09-20", 12, count=10)
+        with patch.object(headroom_hook, "codex_home", return_value=self.root), \
+             patch.object(headroom_hook, "state_path", return_value=self.state):
+            event = {"prompt": "测试提问", "session_id": "sess_1", "turn_id": "turn_1"}
+            headroom_hook.charge(event)
+            self.assertTrue(self.state.is_file())
+            # check recorded score
+            with closing(sqlite3.connect(self.state)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM debits").fetchone()[0]
+                self.assertEqual(count, 1)
+
+    def test_install_hooks_non_destructive_merge_and_uninstall(self):
+        hooks_dir = str(Path(__file__).resolve().parents[1] / "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        import install_hooks
+
+        # Create pre-existing hooks.json with other tools
+        existing_hooks = {
+            "hooks": {
+                "PreToolUse": [{"type": "command", "command": "echo guard"}],
+                "SessionStart": [{"type": "command", "command": "echo preexisting"}]
+            }
+        }
+        hooks_file = self.root / "hooks.json"
+        hooks_file.write_text(json.dumps(existing_hooks), encoding="utf-8")
+
+        # First install
+        code = install_hooks.install(self.root)
+        self.assertEqual(code, 0)
+
+        data = json.loads(hooks_file.read_text(encoding="utf-8"))
+        # Pre-existing hooks preserved
+        self.assertEqual(data["hooks"]["PreToolUse"][0]["command"], "echo guard")
+        self.assertEqual(data["hooks"]["SessionStart"][0]["command"], "echo preexisting")
+        # Headroom hooks appended
+        self.assertTrue(any("headroom_hook.py" in json.dumps(item) for item in data["hooks"]["SessionStart"]))
+        self.assertTrue(any("headroom_hook.py" in json.dumps(item) for item in data["hooks"]["UserPromptSubmit"]))
+
+        # Idempotent re-install
+        code_repeat = install_hooks.install(self.root)
+        self.assertEqual(code_repeat, 0)
+        data_repeat = json.loads(hooks_file.read_text(encoding="utf-8"))
+        ss_headroom = [x for x in data_repeat["hooks"]["SessionStart"] if "headroom_hook.py" in json.dumps(x)]
+        self.assertEqual(len(ss_headroom), 1)
+
+        # Uninstall
+        code_un = install_hooks.uninstall(self.root)
+        self.assertEqual(code_un, 0)
+        data_un = json.loads(hooks_file.read_text(encoding="utf-8"))
+        self.assertTrue(all("headroom_hook.py" not in json.dumps(x) for x in data_un["hooks"]["SessionStart"]))
+        self.assertNotIn("UserPromptSubmit", data_un["hooks"])
+        self.assertEqual(data_un["hooks"]["SessionStart"][0]["command"], "echo preexisting")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

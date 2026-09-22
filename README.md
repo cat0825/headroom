@@ -15,7 +15,14 @@
 
 ## Local install
 
-Copy this folder into a Codex plugin source directory, or install it through a local marketplace. On Windows, install the optional user hooks:
+Copy this folder into a Codex plugin source directory, or install it through a local marketplace. Install the optional user hooks across platforms:
+
+```bash
+# macOS / Linux / Windows
+python skills/headroom/hooks/install_hooks.py
+```
+
+On Windows, you can also run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1

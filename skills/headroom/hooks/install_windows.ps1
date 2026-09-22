@@ -1,20 +1,21 @@
 param(
   [string]$PluginRoot = (Split-Path -Parent $PSScriptRoot),
-  [switch]$Force
+  [switch]$Uninstall
 )
 
-$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
-$target = Join-Path $codexHome 'hooks.json'
-if ((Test-Path -LiteralPath $target) -and -not $Force) {
-  throw "Refusing to overwrite existing $target. Re-run with -Force after merging the hook entries."
+$python = (Get-Command python.exe, python3.exe, py.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (-not $python) {
+  throw "Python executable not found in PATH."
 }
-$pythonw = (Get-Command pythonw.exe -ErrorAction Stop).Source
-$template = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'hooks.json.template') -Raw
-$json = $template.Replace('__PLUGIN_ROOT__', ($PluginRoot -replace '\\', '/')).Replace('__PYTHONW__', ($pythonw -replace '\\', '/'))
-$null = $json | ConvertFrom-Json
-New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
-$tmp = "$target.tmp-$PID"
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[IO.File]::WriteAllText($tmp, $json, $utf8NoBom)
-Move-Item -LiteralPath $tmp -Destination $target -Force
-Write-Output "Installed headroom hooks at $target"
+
+$script = Join-Path $PSScriptRoot 'install_hooks.py'
+$argsList = @($script)
+if ($PluginRoot) {
+  $env:HEADROOM_PLUGIN_ROOT = $PluginRoot
+}
+if ($Uninstall) {
+  $argsList += '--uninstall'
+}
+
+& $python $argsList
+
