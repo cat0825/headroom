@@ -1,7 +1,7 @@
 """Codex lifecycle hook for headroom.
 
-The hook stores no prompt text. It passes prompt text only to the loopback
-Laya scorer and records an opaque hash of session_id + turn_id for idempotence.
+The hook stores no prompt text. It passes prompt text only to the configured
+local scorer and records an opaque hash of session_id + turn_id for idempotence.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def charge(event: dict) -> None:
                "--state-path", str(state_path(event.get("cwd"))), "turn",
                "--event-id", f"hook-{digest}", "--origin", "manual-user",
                "--mode", "normal", "--backend",
-               os.environ.get("HEADROOM_BACKEND", "laya")]
+               os.environ.get("HEADROOM_BACKEND", "mock")]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         subprocess.run(command, input=event["prompt"].encode("utf-8"),
