@@ -2,7 +2,7 @@
 
 > I need a reset.
 
-`headroom` is a small, local-only Codex plugin/skill that turns each eligible interactive turn into a playful 0-10 “brain load” debit. It is entertainment, not a measurement of intelligence, health, or productivity.
+`headroom` is a small, local-only Codex plugin/skill that turns each eligible interactive turn into a playful 0-10 brain-load debit. It is entertainment, not a measurement of intelligence, health, or productivity.
 
 ## What it does
 
@@ -18,7 +18,7 @@
 Copy this folder into a Codex plugin source directory, or install it through a local marketplace. On Windows, install the optional user hooks:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hooks/install_windows.ps1
+powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1
 ```
 
 Review and trust the hook definitions in Codex `/hooks`, then start a new session. `SessionStart` starts the loopback dashboard; `UserPromptSubmit` charges asynchronously and never blocks the response.
@@ -26,8 +26,8 @@ Review and trust the hook definitions in Codex `/hooks`, then start a new sessio
 The terminal commands are:
 
 ```text
-python scripts/headroom.py status
-python scripts/headroom_dashboard.py
+python skills/headroom/scripts/headroom.py status
+python skills/headroom/scripts/headroom_dashboard.py
 ```
 
 Open `http://127.0.0.1:8766/` to view the dashboard. Set `HEADROOM_STATE_PATH` to share one ledger across workspaces. The default is `$CODEX_HOME/headroom/ledger.sqlite3`.
@@ -35,7 +35,7 @@ Open `http://127.0.0.1:8766/` to view the dashboard. Set `HEADROOM_STATE_PATH` t
 ## Tests
 
 ```text
-python tests/test_headroom.py
+python skills/headroom/tests/test_headroom.py
 ```
 
 The repository intentionally contains no Codex history database, ledger, prompt transcript, personal path, API key, or service credential.

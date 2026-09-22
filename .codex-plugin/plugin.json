@@ -1,0 +1,18 @@
+{
+  "name": "headroom",
+  "version": "0.1.0",
+  "description": "headroom - I need a reset.",
+  "author": {
+    "name": "llm-learner"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "headroom",
+    "shortDescription": "A playful per-turn headroom meter.",
+    "longDescription": "I need a reset. Track a local, entertainment-only headroom percentage for eligible Codex turns.",
+    "developerName": "llm-learner",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use $headroom to show my remaining playful headroom."
+  }
+}

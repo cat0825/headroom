@@ -1,4 +1,4 @@
-"""Read-only, loopback-only browser dashboard for headroom."""
+"""Read-only loopback browser dashboard for headroom."""
 
 from __future__ import annotations
 
@@ -13,14 +13,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import headroom  # noqa: E402
 
-
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>headroom - I need a reset.</title><style>
+<title>headroom</title><style>
 :root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#14213d;background:#f5f7fb}
 body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;box-sizing:border-box}
 .card{width:min(420px,100%);background:white;border-radius:20px;padding:28px;box-shadow:0 14px 40px #17213d18}
-.tag{font-size:12px;color:#61708c;letter-spacing:.08em;text-transform:uppercase}
 h1{font-size:23px;margin:8px 0 22px}.value{font-size:56px;font-weight:750;line-height:1;color:#2563eb}
 .sub{color:#61708c;font-size:13px;margin-top:6px}.track{height:12px;background:#e8edf6;border-radius:99px;margin:24px 0 16px;overflow:hidden}
 .fill{height:100%;width:0;background:linear-gradient(90deg,#58c7ab,#2563eb);border-radius:99px;transition:width .35s}
@@ -28,11 +26,11 @@ h1{font-size:23px;margin:8px 0 22px}.value{font-size:56px;font-weight:750;line-h
 button{width:100%;border:0;border-radius:10px;background:#14213d;color:#fff;font:inherit;padding:12px;margin-top:24px;cursor:pointer}
 button:hover{background:#263b61}.error{color:#b42318}
 </style></head><body><main class="card">
-<div class="tag">Codex · headroom · I need a reset.</div><h1>今天的脑力余额</h1>
-<div id="value" class="value">—</div><div class="sub">left</div>
+<h1>脑力剩余</h1>
+<div id="value" class="value">--</div><div class="sub">left</div>
 <div class="track"><div id="fill" class="fill"></div></div>
-<div id="meta" class="meta">读取中…</div><div id="updated" class="small"></div>
-<button id="refresh">刷新</button><div class="small">只读查询；按钮不会扣点。普通对话评分由 turn 命令执行。</div>
+<div id="meta" class="meta">读取中...</div><div id="updated" class="small"></div>
+<button id="refresh">刷新</button>
 </main><script>
 async function refresh(){
  const value=document.getElementById('value'), meta=document.getElementById('meta');
@@ -40,7 +38,7 @@ async function refresh(){
   if(!response.ok)throw Error(data.error||'读取失败');
   value.textContent=Number(data.left_percent).toFixed(2)+'%';
   document.getElementById('fill').style.width=Math.max(0,Math.min(100,data.left_percent))+'%';
-  meta.textContent=`已用 ${Number(data.spent_points).toFixed(2)} / ${data.cap_points} 点 · 峰值日 ${data.peak_date}（${data.peak_messages} 条）`;
+  meta.textContent='已用 '+Number(data.spent_points).toFixed(2)+' / '+data.cap_points+' 点';
   document.getElementById('updated').textContent='最近刷新：'+new Date().toLocaleTimeString();
   meta.classList.remove('error');
  }catch(error){value.textContent='不可用';meta.textContent=error.message;meta.classList.add('error')}
@@ -74,7 +72,7 @@ def create_handler(codex_home: Path, state_path: Path):
                     body = json.dumps(result, ensure_ascii=False).encode("utf-8")
                     status = 200
                 except Exception:
-                    body = json.dumps({"error": "无法读取本机 Codex 历史或脑力账本"}, ensure_ascii=False).encode("utf-8")
+                    body = json.dumps({"error": "无法读取本机 Codex 历史或 headroom 账本"}, ensure_ascii=False).encode("utf-8")
                     status = 503
                 content_type = "application/json; charset=utf-8"
             else:
@@ -86,7 +84,7 @@ def create_handler(codex_home: Path, state_path: Path):
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, _format: str, *_args) -> None:
+        def log_message(self, _format, *_args) -> None:
             pass
 
     return Handler
@@ -95,9 +93,8 @@ def create_handler(codex_home: Path, state_path: Path):
 def main() -> int:
     args = parse_args()
     if not 1024 <= args.port <= 65535:
-        raise SystemExit("--port must be 1024–65535")
-    with ThreadingHTTPServer(("127.0.0.1", args.port),
-                             create_handler(args.codex_home, args.state_path)) as server:
+        raise SystemExit("--port must be between 1024 and 65535")
+    with ThreadingHTTPServer(("127.0.0.1", args.port), create_handler(args.codex_home, args.state_path)) as server:
         print(f"headroom dashboard: http://127.0.0.1:{args.port}/", flush=True)
         server.serve_forever()
     return 0
