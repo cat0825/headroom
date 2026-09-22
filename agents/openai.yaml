@@ -1,0 +1,7 @@
+interface:
+  display_name: "headroom"
+  short_description: "Show playful per-turn headroom usage"
+  default_prompt: "Use $headroom to show or update my playful headroom."
+
+policy:
+  allow_implicit_invocation: true

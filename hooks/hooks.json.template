@@ -1,0 +1,34 @@
+{
+  "description": "headroom: I need a reset.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __PLUGIN_ROOT__/hooks/headroom_hook.py --session-start",
+            "commandWindows": "\"__PYTHONW__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --session-start",
+            "timeout": 3,
+            "async": true,
+            "statusMessage": "Starting headroom dashboard"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __PLUGIN_ROOT__/hooks/headroom_hook.py --user-prompt",
+            "commandWindows": "\"__PYTHONW__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --user-prompt",
+            "timeout": 30,
+            "async": true,
+            "statusMessage": "Charging headroom"
+          }
+        ]
+      }
+    ]
+  }
+}

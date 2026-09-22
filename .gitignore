@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+.venv/
+.env
+.env.*
+agent_test/
+dist/
+build/
