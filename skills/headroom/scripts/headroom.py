@@ -61,7 +61,7 @@ def baseline(history_db: Path, as_of: date) -> dict:
     peak_date = max(counts, key=lambda day: (counts[day], day))
     peak = counts[peak_date]
     return {"peak_date": peak_date, "peak_messages": peak,
-            "cap_points": max(1, peak) * 5, "provisional_floor": peak == 0,
+            "cap_points": max(1, peak) * 2, "provisional_floor": peak == 0,
             "daily_message_counts": counts}
 
 

@@ -24,9 +24,9 @@ Send a message. Spend a few imaginary brain points.
 
 ## What happens when you chat?
 
-- **A daily limit based on you.** Take the busiest day in the previous seven complete days, count its user messages, and multiply by five. No history within that window? Start with five points.
+- **A daily limit based on you.** Take the busiest day in the previous seven complete days, count its user messages, and multiply by two. No history within that window? Start with two points.
 - **A tiny debit per eligible prompt.** Each direct interactive turn gets a 0–10 score. Retries of the same session/turn ID only charge once.
-- **One balance across sessions.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 835 points`, without a separate remaining-points number.
+- **One balance across sessions.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 334 points`, without a separate remaining-points number.
 - **Refresh without spending.** The dashboard refreshes every 10 seconds. Refreshing or switching its language never charges. A new chat is not required for each debit.
 - **Keep it in your taskbar.** A small H tray icon opens a usage card on click. No browser tab or floating ball needed; it reads the local ledger directly.
 

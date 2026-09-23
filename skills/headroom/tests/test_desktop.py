@@ -47,7 +47,9 @@ class DesktopTests(unittest.TestCase):
                 conn.commit()
             before = self.state.read_bytes()
             for _ in range(3):
-                self.assertEqual(desktop.read_usage(self.root, self.state)["left_percent"], 75)
+                result = desktop.read_usage(self.root, self.state)
+                self.assertEqual(result["cap_points"], 4)
+                self.assertEqual(result["left_percent"], 37.5)
             self.assertEqual(self.state.read_bytes(), before)
 
     def test_language_moods_errors_and_compact_percentage(self):

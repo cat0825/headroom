@@ -79,12 +79,28 @@ class HeadroomTests(unittest.TestCase):
         self.assertEqual(result["daily_message_counts"]["2026-09-14"], 1)
         self.assertEqual(result["peak_date"], "2026-09-20")
         self.assertEqual(result["peak_messages"], 167)
-        self.assertEqual(result["cap_points"], 835)
+        self.assertEqual(result["cap_points"], 334)
 
-    def test_zero_history_gets_five_point_floor(self):
+    def test_zero_history_gets_two_point_floor(self):
         result = budget.baseline(self.history, date(2027, 1, 1))
-        self.assertEqual(result["cap_points"], 5)
+        self.assertEqual(result["cap_points"], 2)
         self.assertTrue(result["provisional_floor"])
+
+    def test_cap_change_recalculates_percentage_without_rewriting_debits(self):
+        day = date(2026, 9, 21)
+        self.insert("2026-09-20", count=167)
+        old_base = {"peak_date": "2026-09-20", "peak_messages": 167,
+                    "cap_points": 835, "provisional_floor": False}
+        budget.score_event(old_base, day, self.state, "existing-debit", "manual-user",
+                           "normal", "mock", "", 7.25)
+        before = self.state.read_bytes()
+        with patch.object(budget, "mock_jev_score", side_effect=AssertionError("must not rescore")), \
+                patch.object(budget, "laya_score", side_effect=AssertionError("must not rescore")):
+            result = budget.status(budget.baseline(self.history, day), day, self.state)
+        self.assertEqual(result["cap_points"], 334)
+        self.assertEqual(result["spent_points"], 7.25)
+        self.assertEqual(result["left_percent"], 97.83)
+        self.assertEqual(self.state.read_bytes(), before)
 
     def test_goal_unknown_and_automation_skip_without_scorer_or_state(self):
         base = {"peak_date": "2026-09-20", "peak_messages": 167,
