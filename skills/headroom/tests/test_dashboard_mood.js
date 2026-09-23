@@ -1,21 +1,14 @@
-// Test the actual dashboard function without touching the ledger or a server.
+// Exercise the rendered dashboard JavaScript, never a real server or ledger.
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const {spawnSync} = require('node:child_process');
 
-const source = fs.readFileSync(path.join(__dirname, '../scripts/headroom_dashboard.py'), 'utf8');
-const match = source.match(/function updateMood\(percent\)\{[\s\S]*?\n\}/);
-assert.ok(match, 'Dashboard must define updateMood');
-const picture = {getAttribute(name) { return this[name]; }};
-const mood = {hidden: true};
-const context = vm.createContext({document: {getElementById(id) {
-  if (id === 'mood-image') return picture;
-  if (id === 'mood') return mood;
-  throw new Error(`Unexpected element: ${id}`);
-}}});
-vm.runInContext(match[0], context);
-
+const result = spawnSync(process.env.HEADROOM_TEST_PYTHON || 'python', ['-c',
+  'import json,sys; sys.path.insert(0,sys.argv[1]); import headroom_dashboard as d; print(json.dumps({k:d.render_page(k) for k in d.TEXT}))',
+  path.join(__dirname, '../scripts')], {encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}});
+assert.equal(result.status, 0, result.stderr || String(result.error));
+const pages = JSON.parse(result.stdout);
 const cases = [
   [100, 'brain-full.png'],
   [99.28, 'brain-full.png'],
@@ -27,11 +20,67 @@ const cases = [
   [0, 'brain-low.png'],
   [100, 'brain-full.png'],
 ];
-for (const [percent, file] of cases) {
-  context.percent = percent;
-  vm.runInContext('updateMood(percent)', context);
-  assert.equal(picture.src, '/assets/' + file, `Wrong image at ${percent}%`);
-  assert.equal(mood.hidden, false);
-  assert.ok(picture.alt.length > 0);
+
+async function check(lang) {
+  const page = pages[lang];
+  if (lang === 'en') assert.doesNotMatch(page, /[\u3400-\u9fff]/);
+  const elements = Object.fromEntries(['mood-image','mood','value','meta','updated','fill','refresh'].map(id => [id, {
+    hidden: true, textContent: '', style: {}, classList: {add() {}, remove() {}},
+    getAttribute(name) {return this[name];}, addEventListener(event, callback) {this[event] = callback;},
+  }]));
+  let payload = {left_percent: 72.4, spent_points: 230.46, cap_points: 835};
+  let failure = null;
+  let interval;
+  const context = vm.createContext({
+    document: {getElementById(id) {assert.ok(elements[id], id); return elements[id];}},
+    setInterval(callback, delay) {assert.equal(delay, 10000); interval = callback;},
+    async fetch(url, options) {
+      assert.equal(url, '/api/status?lang=' + lang);
+      assert.equal(options.cache, 'no-store');
+      assert.equal(options.method, undefined); // GET only, no charging route.
+      if (failure === 'network') throw new TypeError('untranslated browser error');
+      return {ok: failure !== 'http', async json() {
+        if (failure === 'json') throw new SyntaxError('untranslated parse error');
+        return payload;
+      }};
+    },
+  });
+  const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+  vm.runInContext(script, context);
+  await new Promise(setImmediate); // Let the initial async refresh finish.
+  assert.equal(elements.value.textContent, '72.40%');
+  assert.equal(elements.meta.textContent, lang === 'en' ? 'Used 230.46 / 835 points' : '已用 230.46 / 835 点');
+  assert.ok(elements.updated.textContent.startsWith(lang === 'en' ? 'Updated: ' : '最近刷新：'));
+  assert.equal(typeof elements.refresh.click, 'function');
+  assert.equal(typeof interval, 'function');
+
+  for (const [percent, file] of cases) {
+    payload = {...payload, left_percent: percent};
+    await elements.refresh.click();
+    assert.equal(elements['mood-image'].src, '/assets/' + file, `Wrong image at ${percent}%`);
+    assert.equal(elements.mood.hidden, false);
+    assert.ok(elements['mood-image'].alt.length > 0);
+    if (lang === 'en') assert.doesNotMatch(elements['mood-image'].alt, /[\u3400-\u9fff]/);
+    assert.equal(elements.fill.style.width, percent + '%');
+  }
+  for (const mode of ['network', 'http', 'json', 'data']) {
+    failure = mode;
+    if (mode === 'data') payload = {...payload, left_percent: null};
+    await interval();
+    assert.equal(elements.value.textContent, lang === 'en' ? 'Unavailable' : '不可用');
+    assert.equal(elements.mood.hidden, true);
+    assert.equal(elements.fill.style.width, '0%');
+    assert.doesNotMatch(elements.meta.textContent, /untranslated/);
+    if (lang === 'en') assert.doesNotMatch(elements.meta.textContent, /[\u3400-\u9fff]/);
+  }
+  failure = null;
+  payload = {...payload, left_percent: 100};
+  await interval();
+  assert.equal(elements.value.textContent, '100.00%');
+  assert.equal(elements.mood.hidden, false);
 }
-console.log(`Passed ${cases.length} dashboard mood threshold/transition cases.`);
+
+(async () => {
+  for (const lang of ['en', 'zh']) await check(lang);
+  console.log('Passed 2 languages: initial render, 18 mood transitions, 8 error paths, refresh and recovery.');
+})().catch(error => {console.error(error); process.exitCode = 1;});
