@@ -8,6 +8,7 @@
 
 - Derives the daily cap from the busiest of the previous seven complete Asia/Shanghai days: `max(userMessage count) * 5`.
 - Shows the remaining balance as a percentage.
+- Switches the dashboard picture with the balance: full (100%) shows the dog wearing earphones, declining (30% to below 100%) shows the crying cat, and low (below 30%) shows the barking dog. Exactly 30% still shows the cat. Images are bundled locally under `skills/headroom/assets/` and update with each dashboard refresh (automatically every 10 seconds).
 - Uses a deterministic mock scorer by default, or an explicitly configured loopback Laya scorer.
 - Stores only an opaque event ID, date, numeric score, and provider in SQLite. Prompt text is passed to the local scorer but is never written to the ledger.
 - Skips Goal/plan mode, scheduled/background work, subagents, continuations, unknown provenance, and scorer failures.
