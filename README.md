@@ -34,6 +34,8 @@ The day boundary is **Asia/Shanghai (UTC+8)**. The seven-day cap counts **all** 
 
 ## Quick start
 
+In the web dashboard, click the mood image to make it hop and play one local dog clip with sound. The first click plays Hey Dog. Consecutive image clicks less than 3.5 seconds apart randomly select one of the other eight clips (dog barks 1–5, Call, Dadada, or Industry Baby), without immediately repeating the current clip. A gap of 3.5 seconds or more restarts at Hey Dog. Dadada and Industry Baby play audio only while the current mood image bounces, rotates and scales to the live audio energy and beat peaks; reduced-motion settings disable these effects; the other seven clips show video. Playback ends on the current mood image without automatically starting another clip; clicking during playback stops it and applies the same click-interval rule. Press Esc while the image button is focused to stop. Refreshing the balance does not interrupt playback, and playing clips never spends points. Use the small speaker icon in the bottom-right corner of the card to change sound immediately without restarting playback. The browser remembers this setting; muting does not stop the audio-reactive animation.
+
 The current automatic setup targets **Codex on Windows with PowerShell**. You need Python 3.10+ and a local Codex history index (`thread_history_1.sqlite`). Mock scoring and the dashboard use only Python's standard library.
 
 ```powershell
