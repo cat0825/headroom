@@ -40,3 +40,8 @@ python skills/headroom/tests/test_headroom.py
 ```
 
 The repository intentionally contains no Codex history database, ledger, prompt transcript, personal path, API key, or service credential.
+
+## Contributors
+
+- [TOGET-H](https://github.com/TOGET-H)
+- [cat0825](https://github.com/cat0825)
