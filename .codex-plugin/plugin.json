@@ -8,11 +8,11 @@
   "skills": "./skills/",
   "homepage": "https://github.com/llm-learner/headroom#readme",
   "repository": "https://github.com/llm-learner/headroom",
-  "keywords": ["codex", "codex-plugin", "codex-skill", "brain-budget", "cognitive-load", "local-first", "privacy", "laya", "jev", "meme"],
+  "keywords": ["codex", "codex-plugin", "codex-skill", "brain-budget", "cognitive-load", "local-first", "privacy", "laya", "jev", "meme", "desktop-widget"],
   "interface": {
     "displayName": "headroom",
     "shortDescription": "Your AI has a usage limit. So do you.",
-    "longDescription": "I need a reset. A local-first, entertainment-only brain-budget meter for Codex with meme moods and English/Chinese UI. Mock scoring or a local Laya service; cloud Jev API integration is not implemented.",
+    "longDescription": "I need a reset. A local-first, entertainment-only brain-budget meter for Codex with a Windows desktop orb, meme moods, and English/Chinese UI. Mock scoring or a local Laya service; cloud Jev API integration is not implemented.",
     "developerName": "llm-learner",
     "category": "Productivity",
     "capabilities": [],

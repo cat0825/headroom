@@ -127,6 +127,25 @@ def start_dashboard(cwd: str | None) -> None:
                      creationflags=creationflags, close_fds=True)
 
 
+def start_display(cwd: str | None) -> None:
+    # Preserve the existing all-display suppression used by lifecycle tests.
+    if os.environ.get("HEADROOM_DISABLE_DASHBOARD") == "1":
+        return
+    mode = os.environ.get("HEADROOM_DISPLAY", "desktop" if sys.platform == "win32" else "web")
+    if mode not in {"desktop", "web", "both", "off"}:
+        raise ValueError("HEADROOM_DISPLAY must be desktop, web, both, or off")
+    if mode in {"web", "both"}:
+        start_dashboard(cwd)
+    if mode in {"desktop", "both"} and os.environ.get("HEADROOM_DISABLE_DESKTOP") != "1":
+        command = [python_background(), str(scorer_path().with_name("headroom_desktop.py")),
+                   "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
+        # The desktop process owns a Windows named mutex, so concurrent
+        # SessionStart events cannot leave multiple balls on the desktop.
+        subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
+
+
 def is_chargeable(event: dict) -> bool:
     if not isinstance(event.get("prompt"), str) or not event["prompt"].strip():
         return False
@@ -205,10 +224,10 @@ def main() -> int:
         return 0
     if "--session-start" in sys.argv:
         try:
-            start_dashboard(event.get("cwd"))
-            debug_hook_event(event, False, "dashboard_ready_or_starting")
+            start_display(event.get("cwd"))
+            debug_hook_event(event, False, "display_ready_or_starting")
         except (OSError, ValueError):
-            debug_hook_event(event, False, "dashboard_failed")
+            debug_hook_event(event, False, "display_failed")
     elif "--user-prompt" in sys.argv:
         charge(event)
     return 0

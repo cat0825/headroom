@@ -11,7 +11,7 @@ AI 有使用额度，你的大脑也该有。
 一个本地优先的 **Codex 插件 / Skill**，给大脑也配个日限额。<br>
 发一句话，扣一点虚构的脑力。看着戴耳机的狗，慢慢变成流泪的猫。
 
-[快速开始](#快速开始) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
+[快速开始](#快速开始) · [桌面悬浮球](#desktop-orb) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
 
 </div>
 
@@ -28,6 +28,7 @@ AI 有使用额度，你的大脑也该有。
 - **每条符合条件的消息扣一点。** 一轮直接互动得到 0–10 分；同一个 session/turn ID 重试只扣一次。
 - **跨会话共用一个余额。** 本地共享账本驱动百分比、进度条和表情。显示「已用 12.50 / 835 点」，不额外显示剩余多少点。
 - **刷新不扣点。** 面板每 10 秒自动刷新；刷新和切换界面语言都不扣点。不需要每发一句话就新建会话。
+- **留在桌面上。** 一个可拖动的小悬浮球，点击才展开用量卡片。Windows 悬浮球直接读取本地账本，不用再开浏览器标签页。
 
 自然日按 **Asia/Shanghai（UTC+8）** 划分。计算七天基准时会统计**所有**记录为 `userMessage` 的消息，包括自动任务；来源筛选只影响扣点，不影响额度基准。
 
@@ -39,10 +40,10 @@ AI 有使用额度，你的大脑也该有。
 git clone https://github.com/llm-learner/headroom.git
 cd headroom
 python skills/headroom/scripts/headroom.py status
-python skills/headroom/scripts/headroom_dashboard.py --lang zh
+pythonw skills/headroom/scripts/headroom_desktop.py --lang zh
 ```
 
-打开[中文面板](http://127.0.0.1:8766/?lang=zh)。这一步只读，不会开启自动扣点。面板已运行时直接打开网址，不要在同一端口重复启动服务。
+桌面右下方会出现小悬浮球，点击展开用量卡片。这一步只读，不会开启自动扣点。如果需要在终端看启动报错，用 `python` 替换 `pythonw`。
 
 ### 开启自动扣点
 
@@ -54,9 +55,30 @@ powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.p
 
 在 Codex `/hooks` 中审查并信任 headroom 的 **SessionStart** 和 **UserPromptSubmit**。首次安装钩子后，新开一个会话验证激活。之后在同一个会话继续发消息就能扣点，**不需要反复新建会话**。
 
-`SessionStart` 启动本地面板；`UserPromptSubmit` 在提交消息后异步评分，**不是等助手回复结束才评分**。数值会在评分完成、面板刷新后出现。安装器不会覆盖已存在的 `hooks.json`；有其他钩子时请合并两条定义，不要直接强制覆盖。
+`SessionStart` 在 Windows 上启动桌面悬浮球（其他平台启动网页面板）；`UserPromptSubmit` 在提交消息后异步评分，**不是等助手回复结束才评分**。数值会在评分完成、界面刷新后出现。安装器不会覆盖已存在的 `hooks.json`；有其他钩子时请合并两条定义，不要直接强制覆盖。
 
 要把 `$headroom` 作为 Codex Skill 使用，可以通过本地插件市场安装这个仓库，或把 `skills/headroom` 复制到 Codex 的 skills 目录。仅安装插件 / Skill 不会自动启用或信任生命周期钩子。请保留钩子指向的源目录。
+
+<a id="desktop-orb"></a>
+
+## 桌面悬浮球（Windows）
+
+- **单击**悬浮球展开 / 收起；卡片右上角的 `−` 和 Escape 也可以收起。
+- **按住拖动**可以移动，位置会被记住；卡片会限制在显示器的可用工作区内。
+- **右键 → 退出悬浮球**只关闭显示，不关闭扣点。下一次 `SessionStart` 可以重新打开它。
+- 卡片显示精确的**剩余百分比**、已用 / 日限额、当前表情和刷新按钮。小球上是精简的整数百分比。
+- 点击卡片的 **EN / ZH** 按钮即时切换语言。启动参数是 `--lang en` 或 `--lang zh`，优先级为：命令行 → `HEADROOM_LANG` → 记住的语言 → 中文。启动参数不会重新配置已经运行的小球。
+- 同一账本、同一个 Windows 登录会话只显示一个小球，多个 Codex 会话不会重复生成。每十秒在后台读取一次用量，刷新不调用评分器。
+
+需要带 **Tk** 的 Python。**Pillow 可选**（`python -m pip install Pillow`），用于完整显示所有表情格式；没有对应图片支持时，用文字表情代替。不依赖网页面板，也不监听端口。仅把位置 / 语言保存在账本旁的 `desktop.json`。它跟随可信任的 Codex `SessionStart` 启动，**没有添加 Windows 登录自启**。
+
+如需选择以后会话启动什么界面，可在钩子的环境里设置 `HEADROOM_DISPLAY`：`desktop`（Windows 默认）、`web`、`both` 或 `off`。只改变显示，不影响扣点。网页版仍可手动使用：
+
+```text
+python skills/headroom/scripts/headroom_dashboard.py --lang zh
+```
+
+打开[中文网页面板](http://127.0.0.1:8766/?lang=zh)。已有服务时直接打开网址，不要在同一端口重复启动。
 
 ## 界面语言
 
@@ -102,6 +124,7 @@ powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.p
 | 当前符合条件的提示词 | 在内存中传给 Mock 或配置的本地 Laya 服务 |
 | 扣点账本 | 保存不透明事件 ID、本地日期、数值分数和 provider，不保存提示词 |
 | 钩子诊断 | 只保留最近一次结果、时间、输入是否存在 / 长度以及评分元数据，不保存提示词或原始 session/turn ID |
+| 桌面悬浮球 | 直接读取本地历史元数据和账本；只保存位置 / 语言，不发起网络请求 |
 | 面板 | 仅监听 `127.0.0.1`；图片随仓库附带，不加载 CDN 或统计脚本 |
 
 默认共享账本是 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`），可用 `HEADROOM_STATE_PATH` 覆盖。不要公开运行时状态、诊断文件、Codex 历史或凭据。

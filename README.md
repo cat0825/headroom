@@ -11,7 +11,7 @@ Your AI has a usage limit. So do you.
 A local-first **Codex plugin and skill** that gives your brain a daily budget.<br>
 Send a message. Spend a few imaginary brain points. Watch the dog become a crying cat.
 
-[Quick start](#quick-start) · [English UI](#dashboard-language) · [Jev & Laya](#jev-laya-and-mock-scoring) · [Privacy](#privacy)
+[Quick start](#quick-start) · [Desktop orb](#desktop-orb-windows) · [English UI](#dashboard-language) · [Jev & Laya](#jev-laya-and-mock-scoring) · [Privacy](#privacy)
 
 </div>
 
@@ -28,6 +28,7 @@ Send a message. Spend a few imaginary brain points. Watch the dog become a cryin
 - **A tiny debit per eligible prompt.** Each direct interactive turn gets a 0–10 score. Retries of the same session/turn ID only charge once.
 - **One balance across sessions.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 835 points`, without a separate remaining-points number.
 - **Refresh without spending.** The dashboard refreshes every 10 seconds. Refreshing or switching its language never charges. A new chat is not required for each debit.
+- **Keep it on your desktop.** A small draggable orb opens a usage card on click. No browser tab needed; the Windows orb reads the local ledger directly.
 
 The day boundary is **Asia/Shanghai (UTC+8)**. The seven-day cap counts **all** recorded `userMessage` items, including automated ones; eligibility filtering applies to debits, not the cap.
 
@@ -39,10 +40,10 @@ The current automatic setup targets **Codex on Windows with PowerShell**. You ne
 git clone https://github.com/llm-learner/headroom.git
 cd headroom
 python skills/headroom/scripts/headroom.py status
-python skills/headroom/scripts/headroom_dashboard.py --lang en
+pythonw skills/headroom/scripts/headroom_desktop.py --lang en
 ```
 
-Open [the English dashboard](http://127.0.0.1:8766/?lang=en). This first step is read-only; it does not enable automatic debits. If the dashboard is already running, use its URL instead of starting another server on the same port.
+A small orb appears near the bottom-right of your desktop. Click it to open the usage card. This first step is read-only; it does not enable automatic debits. Use `python` instead of `pythonw` if you need to see startup errors in a terminal.
 
 ### Enable automatic debits
 
@@ -54,9 +55,28 @@ powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.p
 
 Review and trust headroom's **SessionStart** and **UserPromptSubmit** definitions in Codex `/hooks`. After the initial hook setup, start a new session to verify activation. Subsequent messages in that session can charge normally; you do **not** need to keep making new sessions.
 
-`SessionStart` launches the local dashboard. `UserPromptSubmit` scores after submission, asynchronously—not after the assistant finishes. Allow scoring to finish and the dashboard to refresh. The installer refuses to overwrite an existing `hooks.json`; merge the two definitions with your other hooks instead of blindly forcing an overwrite.
+`SessionStart` launches the desktop orb on Windows (the web dashboard on other platforms). `UserPromptSubmit` scores after submission, asynchronously—not after the assistant finishes. Allow scoring to finish and the display to refresh. The installer refuses to overwrite an existing `hooks.json`; merge the two definitions with your other hooks instead of blindly forcing an overwrite.
 
 To expose `$headroom` as a Codex skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into your Codex skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
+
+## Desktop orb (Windows)
+
+- **Click** the orb to expand/collapse. The `−` button or Escape also collapses the card.
+- **Drag** the orb to move it. Position is remembered, and the card is kept inside the monitor's work area.
+- **Right-click → Exit headroom** closes the display, not scoring. A later `SessionStart` can open it again.
+- The card shows the exact **percent left**, spent/cap points, the current meme, and a Refresh button. The small orb shows a compact integer percentage.
+- Use the card's **EN / ZH** button to switch languages live. Launch options: `--lang en` or `--lang zh`. Priority: CLI → `HEADROOM_LANG` → saved language → Chinese. Startup options do not reconfigure an already-running orb.
+- One orb per shared ledger and Windows login session—even with multiple Codex sessions. Refresh runs every ten seconds, off the UI thread, and never calls a scorer.
+
+The orb needs Python with **Tk**. **Pillow is optional** (`python -m pip install Pillow`) for all bundled meme formats; unsupported images otherwise use text faces. It does not need the web dashboard or any listening port. Only position/language are saved in `desktop.json` beside the ledger. It starts with a trusted Codex `SessionStart`, **not at Windows login**.
+
+To choose what future sessions launch, set `HEADROOM_DISPLAY` in the hook's environment to `desktop` (Windows default), `web`, `both`, or `off`. This changes display startup only, not scoring. The browser UI remains available manually:
+
+```text
+python skills/headroom/scripts/headroom_dashboard.py --lang en
+```
+
+Open [the English web dashboard](http://127.0.0.1:8766/?lang=en). If it is already running, open the URL instead of starting another server on the same port.
 
 ## Dashboard language
 
@@ -100,6 +120,7 @@ The adapter posts JSON with the current prompt in `state.body` and a `questions.
 | Current eligible prompt | Passes it in memory to mock scoring or the configured local Laya service |
 | Debit ledger | Stores an opaque event ID, local date, numeric score, and provider—not prompt text |
 | Hook diagnostics | Stores only the latest outcome, time, input-presence/length metadata, and scoring metadata—not prompt text or raw session/turn IDs |
+| Desktop orb | Reads local history metadata and the ledger directly; saves only window position/language, and makes no network requests |
 | Dashboard | Binds to `127.0.0.1`; images are bundled locally, with no CDN or analytics |
 
 The default shared ledger is `$CODEX_HOME/headroom/ledger.sqlite3` (otherwise `~/.codex/headroom/ledger.sqlite3`). `HEADROOM_STATE_PATH` can override it. Do not publish your runtime state, diagnostics, Codex history, or credentials.
