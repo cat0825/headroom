@@ -1,0 +1,3 @@
+# Optional Windows system-tray display; scoring and the web UI do not need these.
+pystray==0.19.5
+Pillow>=10

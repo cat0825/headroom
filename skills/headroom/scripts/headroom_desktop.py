@@ -1,4 +1,4 @@
-"""Local, read-only headroom desktop orb for Windows (Tk; Pillow optional)."""
+"""Local, read-only headroom Windows tray meter, with an optional desktop orb."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ KEY = "#ff00ff"
 INK, BLUE, MUTED = "#14213d", "#2563eb", "#61708c"
 TEXT = {
     "zh": {**WEB_TEXT["zh"], "open": "展开用量", "collapse": "收起",
-           "exit": "退出悬浮球", "language": "语言", "english": "英文", "chinese": "中文",
+           "exit": "退出 headroom", "language": "语言", "english": "英文", "chinese": "中文",
            "desktop_error": "暂时无法读取本机用量", "switch": "EN"},
     "en": {**WEB_TEXT["en"], "open": "Show usage", "collapse": "Collapse",
            "exit": "Exit headroom", "language": "Language", "english": "English", "chinese": "Chinese",
@@ -150,7 +150,7 @@ def place_window(window, width, height, x, y):
 
 
 class InstanceLock:
-    """One orb per ledger per Windows login session; no open network port."""
+    """One display per ledger per Windows login session; no open network port."""
     def __init__(self, state_path: Path):
         self.handle = None
         digest = hashlib.sha256(os.path.normcase(str(state_path.resolve())).encode()).hexdigest()[:24]
@@ -158,7 +158,7 @@ class InstanceLock:
 
     def acquire(self):
         if sys.platform != "win32":
-            raise RuntimeError("The desktop orb currently supports Windows only")
+            raise RuntimeError("The desktop display currently supports Windows only")
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
         self.kernel.CreateMutexW.restype = wintypes.HANDLE
@@ -185,9 +185,13 @@ def rounded(canvas, x1, y1, x2, y2, radius, **options):
 
 
 class DesktopOrb:
-    def __init__(self, root, codex_home, state_path, settings_path, lang=None, *, visible=True):
+    def __init__(self, root, codex_home, state_path, settings_path, lang=None, *, visible=True, mode="orb"):
+        if mode not in ("tray", "orb"):
+            raise ValueError("Display mode must be tray or orb")
         self.root, self.codex_home, self.state_path = root, codex_home, state_path
         self.settings_path, self.visible = settings_path, visible
+        self.mode, self.tray, self.tray_anchor = mode, None, None
+        self.actions = queue.Queue()
         saved = read_preferences(settings_path)
         self.lang = lang or saved.get("lang", "zh")
         self.data, self.updated, self.failed = None, "", False
@@ -231,9 +235,10 @@ class DesktopOrb:
                                       bd=0, cursor="hand2", font=("Segoe UI", 11))
         self.refresh_button.place(x=32, y=251, width=256, height=32)
         self.paint()
-        if visible:
+        if visible and mode == "orb":
             root.deiconify()
-        place_window(root, BALL, BALL, self.x, self.y)
+        if mode == "orb":
+            place_window(root, BALL, BALL, self.x, self.y)
         self.panel.withdraw()
 
     @staticmethod
@@ -248,6 +253,10 @@ class DesktopOrb:
             window.attributes("-toolwindow", True)
 
     def start(self):
+        if self.mode == "tray":
+            from headroom_tray import TrayIcon
+            self.tray = TrayIcon(self.actions, TEXT[self.lang], presentation(self.data, self.lang))
+            self.tray.start()
         self.request_refresh()
         self.poll_id = self.root.after(100, self.poll)
         self.refresh_id = self.root.after(10000, self.periodic_refresh)
@@ -272,6 +281,9 @@ class DesktopOrb:
     def poll(self):
         if self.closed:
             return
+        self.drain_actions()
+        if self.closed:
+            return
         try:
             self.data, self.updated = self.results.get_nowait()
             self.failed = self.data is None
@@ -281,6 +293,28 @@ class DesktopOrb:
         except queue.Empty:
             pass
         self.poll_id = self.root.after(100, self.poll)
+
+    def drain_actions(self):
+        """Called on the Tk thread, never from a native tray callback."""
+        while not self.closed:
+            try:
+                action = self.actions.get_nowait()
+            except queue.Empty:
+                return
+            if action == "toggle":
+                if not self.expanded:
+                    self.tray_anchor = (self.root.winfo_pointerx(), self.root.winfo_pointery())
+                self.toggle()
+            elif action == "refresh":
+                self.request_refresh()
+            elif action in ("en", "zh"):
+                self.switch_language(action)
+            elif action == "exit":
+                self.close()
+
+    def update_tray(self):
+        if self.tray is not None:
+            self.tray.update(TEXT[self.lang], presentation(self.data, self.lang), self.expanded)
 
     def mood_image(self, filename):
         if filename not in self.images:
@@ -339,8 +373,16 @@ class DesktopOrb:
         rounded(self.card, 24, 245, 296, 289, 10, fill=INK, outline="")
         self.language_button.configure(text=labels["switch"])
         self.refresh_button.configure(text=labels["refresh"])
+        self.update_tray()
 
     def reposition(self):
+        if self.mode == "tray":
+            if self.expanded:
+                ax, ay = self.tray_anchor or (self.x, self.y)
+                area = work_area(self.root, ax, ay)
+                x, y = clamp_position(ax-CARD_W, ay-CARD_H-12, CARD_W, CARD_H, area)
+                place_window(self.panel, CARD_W, CARD_H, x, y)
+            return
         area = work_area(self.root, self.x+BALL//2, self.y+BALL//2)
         self.x, self.y = clamp_position(self.x, self.y, BALL, BALL, area)
         place_window(self.root, BALL, BALL, self.x, self.y)
@@ -359,10 +401,12 @@ class DesktopOrb:
             self.request_refresh()
             if self.visible:
                 self.refresh_button.focus_set()
+            self.update_tray()
 
     def collapse(self):
         self.expanded = False
         self.panel.withdraw()
+        self.update_tray()
 
     def on_press(self, event):
         self.press = event.x_root, event.y_root, self.x, self.y
@@ -422,6 +466,8 @@ class DesktopOrb:
             for timer in (self.poll_id, self.refresh_id):
                 if timer:
                     self.root.after_cancel(timer)
+            if self.tray is not None:
+                self.tray.close()
             self.root.destroy()
 
 
@@ -432,9 +478,13 @@ def parse_args(argv=None):
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--settings-path", type=Path)
     parser.add_argument("--lang", choices=TEXT, default=os.environ.get("HEADROOM_LANG"))
+    parser.add_argument("--mode", choices=("tray", "orb"),
+                        default=os.environ.get("HEADROOM_DESKTOP_MODE", "tray"))
     args = parser.parse_args(argv)
     if args.lang is not None and args.lang not in TEXT:
         parser.error("HEADROOM_LANG must be zh or en")
+    if args.mode not in ("tray", "orb"):
+        parser.error("HEADROOM_DESKTOP_MODE must be tray or orb")
     args.state_path = args.state_path or Path(os.environ.get("HEADROOM_STATE_PATH") or args.codex_home / "headroom" / "ledger.sqlite3")
     args.settings_path = args.settings_path or args.state_path.with_name("desktop.json")
     protected = {args.state_path.resolve(), (args.codex_home / "thread_history_1.sqlite").resolve(),
@@ -449,12 +499,18 @@ def main():
     lock = InstanceLock(args.state_path)
     if not lock.acquire():
         return 0
+    app = None
+    root = None
     try:
         root = tk.Tk()
-        app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang)
+        app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang, mode=args.mode)
         app.start()
         root.mainloop()
     finally:
+        if app is not None:
+            app.close()
+        elif root is not None:
+            root.destroy()
         lock.close()
     return 0
 

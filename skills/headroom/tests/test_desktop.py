@@ -94,6 +94,14 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual((args.lang, args.codex_home, args.state_path), ("en", self.root, self.state))
             self.assertEqual(desktop.parse_args(["--lang", "zh"]).lang, "zh")
             self.assertEqual(args.settings_path, self.settings)
+            self.assertEqual(args.mode, "tray")
+            self.assertEqual(desktop.parse_args(["--mode", "orb"]).mode, "orb")
+        with patch.dict(os.environ, {"HEADROOM_DESKTOP_MODE": "orb"}):
+            self.assertEqual(desktop.parse_args([]).mode, "orb")
+            self.assertEqual(desktop.parse_args(["--mode", "tray"]).mode, "tray")
+        with patch.dict(os.environ, {"HEADROOM_DESKTOP_MODE": "bad"}), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                desktop.parse_args([])
         with patch.dict(os.environ, {"HEADROOM_LANG": "bad"}), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 desktop.parse_args([])
@@ -143,6 +151,73 @@ class DesktopTests(unittest.TestCase):
         finally:
             first.close()
             second.close()
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Tk widget integration")
+    def test_tray_keeps_orb_hidden_and_dispatches_on_tk_thread(self):
+        root = desktop.tk.Tk()
+        app = desktop.DesktopOrb(root, self.root, self.state, self.settings, "en", visible=False, mode="tray")
+        self.addCleanup(lambda: None if app.closed else app.close())
+        with patch("headroom_tray.TrayIcon") as factory, patch.object(app, "request_refresh") as refresh:
+            app.start()
+            tray = factory.return_value
+            tray.start.assert_called_once()
+            self.assertEqual(root.state(), "withdrawn")
+            position = (app.x, app.y)
+            app.actions.put("toggle")
+            self.assertFalse(app.expanded)  # Native callbacks cannot manipulate Tk.
+            app.drain_actions()
+            self.assertTrue(app.expanded)
+            self.assertEqual(root.state(), "withdrawn")
+            app.reposition()
+            self.assertEqual((app.x, app.y), position)
+            app.actions.put("zh")
+            app.actions.put("refresh")
+            app.drain_actions()
+            self.assertEqual(app.lang, "zh")
+            self.assertEqual(refresh.call_count, 3)
+            self.assertEqual(tray.update.call_args.args[0], desktop.TEXT["zh"])
+            app.collapse_button.invoke()
+            self.assertFalse(app.expanded)
+            self.assertEqual(app.panel.state(), "withdrawn")
+            app.actions.put("exit")
+            app.drain_actions()
+            self.assertTrue(app.closed)
+            tray.close.assert_called_once()
+            app.close()  # Cleanup is idempotent.
+            tray.close.assert_called_once()
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(sys.platform == "win32" and os.environ.get("HEADROOM_TEST_NATIVE_TRAY") == "1",
+                         "opt-in smoke briefly opens a real tray icon and usage card")
+    def test_native_tray_and_popup_lifecycle(self):
+        root = desktop.tk.Tk()
+        app = desktop.DesktopOrb(root, self.root, self.state, self.settings, "en", mode="tray")
+        self.addCleanup(lambda: None if app.closed else app.close())
+        app.start()
+        until = time.monotonic() + 5
+        while app.data is None and time.monotonic() < until:
+            root.update()
+            time.sleep(.01)
+        self.assertIsNotNone(app.data)
+        self.assertTrue(app.tray.icon.visible)
+        self.assertTrue(app.tray.thread.is_alive())
+        self.assertEqual(app.tray.icon.title, "headroom · 100.00% left")
+        self.assertEqual(root.state(), "withdrawn")
+        # Exercise the application's own callback, not OS input automation.
+        list(app.tray.icon.menu)[0](app.tray.icon)
+        app.drain_actions()
+        root.update()
+        self.assertTrue(app.panel.winfo_ismapped())
+        self.assertFalse(root.winfo_ismapped())
+        list(app.tray.icon.menu)[0](app.tray.icon)
+        app.drain_actions()
+        root.update()
+        self.assertFalse(app.panel.winfo_ismapped())
+        list(app.tray.icon.menu)[-1](app.tray.icon)
+        app.drain_actions()
+        self.assertTrue(app.closed)
+        self.assertFalse(app.tray.thread.is_alive())
         self.assertFalse(self.state.exists())
 
     @unittest.skipUnless(sys.platform == "win32", "Windows Tk widget integration")
