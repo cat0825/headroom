@@ -9,7 +9,7 @@ Your AI has a usage limit. So do you.
 **English** · [简体中文](README.zh-CN.md)
 
 A local-first **Codex plugin and skill** that gives your brain a daily budget.<br>
-Send a message. Spend a few imaginary brain points. Watch the dog become a crying cat.
+Send a message. Spend a few imaginary brain points.
 
 [Quick start](#quick-start) · [Desktop orb](#desktop-orb-windows) · [English UI](#dashboard-language) · [Jev & Laya](#jev-laya-and-mock-scoring) · [Privacy](#privacy)
 
