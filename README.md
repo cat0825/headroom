@@ -8,7 +8,7 @@
 
 - Derives the daily cap from the busiest of the previous seven complete Asia/Shanghai days: `max(userMessage count) * 5`.
 - Shows the remaining balance as a percentage.
-- Switches the dashboard picture with the balance: full (100%) shows the dog wearing earphones, declining (30% to below 100%) shows the crying cat, and low (below 30%) shows the barking dog. Exactly 30% still shows the cat. Images are bundled locally under `skills/headroom/assets/` and update with each dashboard refresh (automatically every 10 seconds).
+- Switches the dashboard picture with the balance: high (70% to 100%, including 70%) shows the dog wearing earphones, declining (30% to below 70%, including 30%) shows the crying cat, and low (below 30%) shows the barking dog. Images are bundled locally under `skills/headroom/assets/` and update with each dashboard refresh (automatically every 10 seconds).
 - Uses a deterministic mock scorer by default, or an explicitly configured loopback Laya scorer.
 - Stores only an opaque event ID, date, numeric score, and provider in SQLite. Prompt text is passed to the local scorer but is never written to the ledger.
 - Skips Goal/plan mode, scheduled/background work, subagents, continuations, unknown provenance, and scorer failures.
@@ -37,6 +37,12 @@ Open `http://127.0.0.1:8766/` to view the dashboard. Set `HEADROOM_STATE_PATH` t
 
 ```text
 python skills/headroom/tests/test_headroom.py
+```
+
+With Node.js installed, check the dashboard's image thresholds:
+
+```text
+node skills/headroom/tests/test_dashboard_mood.js
 ```
 
 The repository intentionally contains no Codex history database, ledger, prompt transcript, personal path, API key, or service credential.

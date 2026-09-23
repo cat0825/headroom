@@ -44,8 +44,8 @@ button:hover{background:#263b61}.error{color:#b42318}
 </main><script>
 function updateMood(percent){
  const picture=document.getElementById('mood-image');
- const [file,description]=percent>=100
-  ? ['brain-full.png','脑力满格：戴耳机的狗狗']
+ const [file,description]=percent>=70
+  ? ['brain-full.png','脑力充足：戴耳机的狗狗']
   : percent<30
    ? ['brain-low.png','脑力低于30%：咆哮的狗狗']
    : ['brain-declining.webp','脑力下降中：流泪的猫猫'];
