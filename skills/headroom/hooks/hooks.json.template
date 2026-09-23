@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 __PLUGIN_ROOT__/hooks/headroom_hook.py --session-start",
-            "commandWindows": "\"__PYTHON__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --session-start",
+            "command": "python3 \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --session-start",
+            "commandWindows": "& \"__PYTHON__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --session-start",
             "timeout": 3,
             "async": true,
             "statusMessage": "Starting headroom dashboard"
@@ -21,8 +21,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 __PLUGIN_ROOT__/hooks/headroom_hook.py --user-prompt",
-            "commandWindows": "\"__PYTHON__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --user-prompt",
+            "command": "python3 \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --user-prompt",
+            "commandWindows": "& \"__PYTHON__\" \"__PLUGIN_ROOT__/hooks/headroom_hook.py\" --user-prompt",
             "timeout": 30,
             "async": true,
             "statusMessage": "Charging headroom"

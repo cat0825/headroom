@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
+from urllib.request import ProxyHandler, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import headroom as budget  # noqa: E402
+import headroom_dashboard as dashboard  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+import headroom_hook as hook_module  # noqa: E402
 
 
 class FakeResponse:
@@ -152,6 +159,148 @@ class HeadroomTests(unittest.TestCase):
         self.assertEqual(result["action"], "skipped")
         self.assertEqual(result["left_percent"], 100)
         self.assertEqual(result["spent_points"], 0)
+
+    def invoke_hook(self, payload: bytes, via_powershell: bool = False):
+        hook = Path(__file__).resolve().parents[1] / "hooks" / "headroom_hook.py"
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("HEADROOM_") and key != "PLUGIN_ROOT"}
+        env.update(CODEX_HOME=str(self.root), HEADROOM_STATE_PATH=str(self.state),
+                   HEADROOM_DEBUG_PATH=str(self.root / "diagnostic.json"),
+                   HEADROOM_BACKEND="mock", HEADROOM_DISABLE_DASHBOARD="1", PYTHONUTF8="0",
+                   PYTHONIOENCODING="gbk:surrogateescape")
+        command = [sys.executable, str(hook), "--user-prompt"]
+        if via_powershell:
+            template = json.loads(hook.with_name("hooks.json.template").read_text())
+            windows = template["hooks"]["UserPromptSubmit"][0]["hooks"][0]["commandWindows"]
+            windows = windows.replace("__PYTHON__", sys.executable.replace("\\", "/"))
+            windows = windows.replace("__PLUGIN_ROOT__", hook.parent.parent.as_posix())
+            command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windows]
+        result = subprocess.run(command,
+                                input=payload, capture_output=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        return json.loads((self.root / "diagnostic.json").read_text(encoding="utf-8"))
+
+    def test_hook_utf8_under_gbk_and_duplicate(self):
+        message = "查询本周AI新模型发布 🧠"
+        event = {"session_id": "private-test-session", "turn_id": "private-test-turn",
+                 "prompt": message, "permission_mode": "default"}
+        payload = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        self.assertEqual(self.invoke_hook(payload)["outcome"], "charged")
+        self.assertEqual(self.invoke_hook(payload)["outcome"], "duplicate")
+        with closing(sqlite3.connect(self.state)) as conn:
+            rows = conn.execute("SELECT * FROM debits").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][2], 1)
+        stored = (self.root / "diagnostic.json").read_text() + str(rows)
+        for secret in (message, "private-test-session", "private-test-turn"):
+            self.assertNotIn(secret, stored)
+
+    def test_hook_bom_and_bad_input_fail_open(self):
+        for payload in (b"not-json", b"\xff", b"null"):
+            self.assertEqual(self.invoke_hook(payload)["outcome"], "invalid_input")
+            self.assertFalse(self.state.exists())
+        payload = json.dumps({"session_id": "s", "turn_id": "t", "prompt": "hello"}).encode()
+        self.assertEqual(self.invoke_hook(b"\xef\xbb\xbf" + payload)["outcome"], "charged")
+
+    def test_hook_ineligible_events_never_charge(self):
+        base = {"session_id": "s", "turn_id": "t", "prompt": "hi"}
+        for patch in ({"permission_mode": "plan"}, {"source": "scheduled"},
+                      {"source": "subagent"}, {"origin": "automatic"},
+                      {"turn_id": ""}, {"prompt": ""}):
+            payload = json.dumps({**base, **patch}).encode()
+            self.assertEqual(self.invoke_hook(payload)["outcome"], "ineligible")
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell regression")
+    def test_windows_hook_template_invokes_quoted_python(self):
+        payload = json.dumps({"session_id": "s", "turn_id": "t",
+                              "prompt": "查询本周AI新模型发布 🧠"}, ensure_ascii=False).encode("utf-8")
+        self.assertEqual(self.invoke_hook(payload, via_powershell=True)["outcome"], "charged")
+
+    def test_lifecycle_smoke_cannot_start_dashboard(self):
+        with patch.dict(os.environ, {"HEADROOM_DISABLE_DASHBOARD": "1"}), \
+                patch.object(hook_module, "dashboard_is_up") as probe, \
+                patch.object(hook_module.subprocess, "Popen") as spawn:
+            hook_module.start_dashboard(None)
+        probe.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_hook_backend_config_is_live_and_environment_wins(self):
+        config = self.root / "headroom" / "config.json"
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(hook_module, "codex_home", return_value=self.root):
+            self.assertEqual(hook_module.scoring_backend(), "mock")
+            config.parent.mkdir()
+            config.write_text('{"backend":"laya"}', encoding="utf-8-sig")
+            self.assertEqual(hook_module.scoring_backend(), "laya")
+            with patch.dict(os.environ, {"HEADROOM_BACKEND": "mock"}):
+                self.assertEqual(hook_module.scoring_backend(), "mock")
+            config.write_text('{"backend":"mock"}', encoding="utf-8")
+            self.assertEqual(hook_module.scoring_backend(), "mock")
+
+    def test_hook_invalid_backend_config_never_silently_uses_mock(self):
+        config = self.root / "headroom" / "config.json"
+        config.parent.mkdir()
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(hook_module, "codex_home", return_value=self.root):
+            for contents in ('not-json', 'null', '[]', '{"backend":"remote"}',
+                             '{"backend":null}', '{"backend":[]}'):
+                config.write_text(contents, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    hook_module.scoring_backend()
+            with patch.dict(os.environ, {"HEADROOM_BACKEND": "invalid"}):
+                with self.assertRaises(ValueError):
+                    hook_module.scoring_backend()
+
+    def test_hook_invalid_backend_skips_worker_and_ledger(self):
+        with patch.object(hook_module, "scoring_backend", side_effect=ValueError), \
+                patch.object(hook_module, "debug_hook_event") as diagnostic, \
+                patch.object(hook_module.subprocess, "run") as score:
+            hook_module.charge({"session_id": "s", "turn_id": "t", "prompt": "hi"})
+        score.assert_not_called()
+        diagnostic.assert_called_with(
+            {"session_id": "s", "turn_id": "t", "prompt": "hi"}, True, "invalid_backend_config")
+        self.assertFalse(self.state.exists())
+
+    def test_dashboard_launch_uses_same_home_and_ledger(self):
+        env = {"HEADROOM_DISABLE_DASHBOARD": "0", "CODEX_HOME": str(self.root),
+               "HEADROOM_STATE_PATH": str(self.state)}
+        with patch.dict(os.environ, env), \
+                patch.object(hook_module, "dashboard_is_up", return_value=False), \
+                patch.object(hook_module.subprocess, "Popen") as spawn:
+            hook_module.start_dashboard(None)
+        args = spawn.call_args.args[0]
+        self.assertEqual(args[args.index("--codex-home") + 1], str(self.root))
+        self.assertEqual(args[args.index("--state-path") + 1], str(self.state))
+
+    def test_dashboard_reads_live_ledger_without_charging(self):
+        today = datetime.now(budget.SHANGHAI).date()
+        self.insert((today - timedelta(days=1)).isoformat(), count=2)
+        base = budget.baseline(self.history, today)
+        server = dashboard.ThreadingHTTPServer(
+            ("127.0.0.1", 0), dashboard.create_handler(self.root, self.state))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/api/status"
+            opener = build_opener(ProxyHandler({}))
+            def read_status():
+                with opener.open(url, timeout=3) as response:
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+                    return json.load(response)
+            self.assertEqual(read_status()["spent_points"], 0)
+            self.assertFalse(self.state.exists())  # A refresh never creates debits.
+            budget.score_event(base, today, self.state, "dashboard-regression",
+                               "manual-user", "normal", "mock", "", 2)
+            for _ in range(2):
+                self.assertEqual(read_status(), budget.status(base, today, self.state))
+            with closing(sqlite3.connect(self.state)) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM debits").fetchone()[0], 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=3)
 
 
 if __name__ == "__main__":
