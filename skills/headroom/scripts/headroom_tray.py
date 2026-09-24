@@ -1,4 +1,4 @@
-"""Windows tray adapter. Native callbacks enqueue actions; only Tk draws the card."""
+"""Windows tray adapter. Native callbacks enqueue actions for the card controller."""
 
 from __future__ import annotations
 

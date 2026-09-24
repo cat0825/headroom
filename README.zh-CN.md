@@ -67,13 +67,17 @@ powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.p
 ## 任务栏托盘（Windows）
 
 - **单击**小 H 图标展开 / 收起；卡片右上角的 `−` 和 Escape 也可以收起。悬停图标显示剩余百分比。
+- 启动时加 `--show` 可直接展开卡片（先退出已有显示）。
 - 卡片出现在托盘附近，限制在显示器的可用工作区内。Windows 可能先把图标放进**隐藏图标**箭头里，可以手动拖到外面常驻。
 - **右键 → 退出 headroom**只关闭显示，不关闭扣点。下一次 `SessionStart` 可以重新打开它。
 - 卡片显示精确的**剩余百分比**、已用 / 日限额、当前表情和刷新按钮。
+- **点击表情**就能播放与网页版相同的片段和随音乐律动的动画。小喇叭按钮会记住静音状态；收起卡片或切换语言会停止播放。展开时不会自动出声，播放也不扣点。
 - 点击卡片的 **EN / ZH** 按钮即时切换语言。启动参数是 `--lang en` 或 `--lang zh`，优先级为：命令行 → `HEADROOM_LANG` → 记住的语言 → 中文。修改启动参数前先退出已经运行的显示。
 - 同一账本、同一个 Windows 登录会话只显示一个入口，多个 Codex 会话不会重复生成。每十秒在后台读取一次用量，刷新不调用评分器。
 
-托盘模式需要带 **Tk** 的 Python，以及 **pystray** 和 **Pillow**（见 `requirements-desktop.txt`）。不依赖网页面板，也不监听端口。仅把悬浮球位置 / 语言保存在账本旁的 `desktop.json`。它跟随可信任的 Codex `SessionStart` 启动，**没有添加 Windows 登录自启**。
+动态托盘卡片需要带 **Tk** 的 Python、**pystray**、**Pillow**、**pywebview** 和 **Microsoft Edge WebView2 Runtime**（Python 依赖见 `requirements-desktop.txt`）。它是原生小窗口，不打开浏览器标签页，也不依赖 8766 网页面板。内部只读服务只监听 `127.0.0.1` 的随机空闲端口，用来读取打包素材和用量，退出显示时关闭。仅把位置 / 语言 / 静音偏好保存在账本旁的 `desktop.json`。它跟随可信任的 Codex `SessionStart` 启动，**没有添加 Windows 登录自启**。
+
+如果没有 WebView2，退出显示后可用 `--renderer tk` 启动原来的静态托盘卡片，不带播放器，也不监听端口。
 
 如果仍想用可拖动的悬浮球，退出托盘显示后加 `--mode orb` 启动。默认是 `--mode tray`；也可以用 `HEADROOM_DESKTOP_MODE=tray|orb` 指定启动模式。悬浮球模式不需要 pystray，Pillow 仍为可选，没有对应图片支持时用文字表情代替。
 
@@ -129,7 +133,7 @@ python skills/headroom/scripts/headroom_dashboard.py --lang zh
 | 当前符合条件的提示词 | 在内存中传给 Mock 或配置的本地 Laya 服务 |
 | 扣点账本 | 保存不透明事件 ID、本地日期、数值分数和 provider，不保存提示词 |
 | 钩子诊断 | 只保留最近一次结果、时间、输入是否存在 / 长度以及评分元数据，不保存提示词或原始 session/turn ID |
-| 托盘 / 桌面显示 | 直接读取本地历史元数据和账本；只保存悬浮球位置 / 语言，不发起网络请求 |
+| 托盘 / 桌面显示 | 读取本地历史元数据和账本；动态卡片使用临时回环服务和打包素材，不调用云端评分；只保存位置 / 语言 / 静音偏好 |
 | 面板 | 仅监听 `127.0.0.1`；图片随仓库附带，不加载 CDN 或统计脚本 |
 
 默认共享账本是 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`），可用 `HEADROOM_STATE_PATH` 覆盖。不要公开运行时状态、诊断文件、Codex 历史或凭据。

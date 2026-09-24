@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const {spawnSync} = require('node:child_process');
 
 const result = spawnSync(process.env.HEADROOM_TEST_PYTHON || 'python', ['-c',
-  'import json,sys; sys.path.insert(0,sys.argv[1]); import headroom_dashboard as d; print(json.dumps({k:d.render_page(k) for k in d.TEXT}))',
+  'import json,sys; sys.path.insert(0,sys.argv[1]); import headroom_dashboard as d; print(json.dumps({k+str(t):d.render_page(k,desktop=t) for k in d.TEXT for t in (False,True)}))',
   path.join(__dirname, '../scripts')], {encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}});
 assert.equal(result.status, 0, result.stderr || String(result.error));
 const pages = JSON.parse(result.stdout);
@@ -21,12 +21,15 @@ const cases = [
   [100, 'brain-full.png'],
 ];
 
-async function check(lang, storedMute = 'false', brokenStorage = false) {
-  const page = pages[lang];
+async function check(lang, storedMute = 'false', brokenStorage = false, desktop = false) {
+  const page = pages[lang + (desktop ? 'True' : 'False')];
   if (lang === 'en') assert.doesNotMatch(page, /[\u3400-\u9fff]/);
-  const elements = Object.fromEntries(['sound-toggle','sound-icon','sound-label','mood-image','mood-video','mood-feedback','mood','value','meta','updated','fill','refresh'].map(id => [id, {
+  const elements = Object.fromEntries(['collapse','language','sound-toggle','sound-icon','sound-label','mood-image','mood-video','mood-feedback','mood','value','meta','updated','fill','refresh'].map(id => [id, {
     hidden: true, textContent: '', style: {}, classList: {add() {}, remove() {}},
-    getAttribute(name) {return this[name];}, addEventListener(event, callback) {this[event] = callback;},
+    getAttribute(name) {return this[name];}, addEventListener(event, callback) {
+      const previous=this[event];
+      this[event]=previous?((...args)=>{const result=previous(...args);return callback(...args)??result;}):callback;
+    },
     removeAttribute(name) {delete this[name];}, pause() {this.paused=true;}, load() {},
     setAttribute(name,value) {this[name]=value;},
     async play() {this.paused=false;},
@@ -40,6 +43,7 @@ async function check(lang, storedMute = 'false', brokenStorage = false) {
   let frameId=0, audioLevel=200, sourceCount=0, clickTime=0, randomValue=0;
   const motion={matches:false};
   let gain;
+  const windowEvents={}, documentEvents={}, bridgeCalls=[];
   class FakeAudioContext {
     sampleRate=48000;
     destination={};
@@ -55,13 +59,21 @@ async function check(lang, storedMute = 'false', brokenStorage = false) {
   const context = vm.createContext({
     Math:Object.assign(Object.create(Math),{random:()=>randomValue}),
     performance: {now(){return clickTime;}},
-    document: {getElementById(id) {assert.ok(elements[id], id); return elements[id];}},
+    document: {getElementById(id) {assert.ok(elements[id], id); return elements[id];},
+      addEventListener(event,callback){documentEvents[event]=callback;}},
     setInterval(callback, delay) {assert.equal(delay, 10000); interval = callback;},
     setTimeout(callback) {timers.set(++timerId,callback);return timerId;},
     clearTimeout(id) {timers.delete(id);},
     requestAnimationFrame(callback) {frames.set(++frameId,callback);return frameId;},
     cancelAnimationFrame(id) {frames.delete(id);},
-    window: {matchMedia() {return motion;},AudioContext:FakeAudioContext},
+    window: {matchMedia() {return motion;},AudioContext:FakeAudioContext,
+      addEventListener(event,callback){windowEvents[event]=callback;},
+      pywebview:{api:{
+        async settings(){return {muted:!brokenStorage&&storedMute==='true'};},
+        collapse(){bridgeCalls.push(['collapse']);},
+        language(lang){bridgeCalls.push(['language',lang]);},
+        sound(muted){bridgeCalls.push(['sound',muted]);},
+      }}},
     localStorage: {
       getItem(key){assert.equal(key,'headroom-muted');if(brokenStorage)throw Error('blocked');return storedMute;},
       setItem(key,value){assert.equal(key,'headroom-muted');if(brokenStorage)throw Error('blocked');storedMute=value;},
@@ -77,8 +89,8 @@ async function check(lang, storedMute = 'false', brokenStorage = false) {
       }};
     },
   });
-  const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script, context);
+  for(const script of page.matchAll(/<script>([\s\S]*?)<\/script>/g))vm.runInContext(script[1],context);
+  if(desktop)windowEvents.pywebviewready();
   await new Promise(setImmediate); // Let the initial async refresh finish.
   assert.equal(elements.value.textContent, '72.40%');
   assert.equal(elements.meta.textContent, lang === 'en' ? 'Used 230.46 / 835 points' : '已用 230.46 / 835 点');
@@ -199,11 +211,21 @@ async function check(lang, storedMute = 'false', brokenStorage = false) {
   assert.equal(video.src,'/assets/audio/dog-dadada.m4a'); // Never immediately repeat or select Hey Dog.
   clickTime+=3500;elements.mood.click();await finishHop();
   assert.equal(video.src,'/assets/videos/dog-hey.mp4');
+  if(desktop){
+    assert.ok(bridgeCalls.some(call=>call[0]==='sound'&&call[1]===true));
+    elements.collapse.click();assert.equal(video.paused,true);
+    assert.deepEqual(bridgeCalls.at(-1),['collapse']);
+    elements.language.click();assert.deepEqual(bridgeCalls.at(-1),['language',lang==='en'?'zh':'en']);
+    elements.mood.click();await finishHop();
+    documentEvents.keydown({key:'Escape'});assert.equal(video.paused,true);
+    assert.deepEqual(bridgeCalls.at(-1),['collapse']);
+  }
 }
 
 (async () => {
   for (const lang of ['en', 'zh']) await check(lang);
   await check('zh','true');
   await check('en','false',true);
+  for(const lang of ['en','zh'])await check(lang,'true',false,true);
   console.log('Passed: random selection, no consecutive repeats, 3.5-second reset, media playback, audio-reactive motion, mute and recovery in both languages.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

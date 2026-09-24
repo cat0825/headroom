@@ -252,17 +252,52 @@ refresh();setInterval(refresh,10000);
 </script></body></html>"""
 
 
-def render_page(lang: str) -> str:
+TRAY_STYLE = """<style>
+html,body{width:100%;height:100%;min-height:0;overflow:hidden;background:white}
+body{display:block;padding:0}.card{width:100%;height:100%;padding:42px 22px 20px;box-shadow:none;border-radius:12px}
+.heading-row{min-height:56px;margin-bottom:12px}h1{font-size:20px}
+button.mood,.mood img,.mood video{width:56px;height:56px}
+.value{font-size:46px}.track{height:10px;margin:16px 0 10px}.meta{font-size:14px}
+.small{margin-top:8px}.controls{margin-top:14px}.controls #refresh{padding:10px}
+.tray-toolbar{position:absolute;right:8px;top:5px;display:flex;gap:4px;z-index:2}
+.tray-toolbar button{width:30px;height:28px;margin:0;padding:0;background:white;color:#61708c;font-size:13px}
+.tray-toolbar #collapse{font-size:22px}.tray-toolbar button:hover{background:#f3f5f8}
+#mood-feedback{position:absolute;bottom:49px;left:22px;right:22px;background:white;font-size:11px}
+</style>"""
+
+TRAY_SCRIPT = """<script>
+async function trayReady(){
+ const settings=await window.pywebview.api.settings();
+ muted=settings.muted;updateSound();
+}
+window.addEventListener('pywebviewready',()=>{trayReady().catch(()=>{});});
+document.getElementById('collapse').addEventListener('click',()=>{stopClip();window.pywebview.api.collapse();});
+document.getElementById('language').addEventListener('click',()=>{stopClip();window.pywebview.api.language(LANGUAGE==='en'?'zh':'en');});
+document.getElementById('sound-toggle').addEventListener('click',()=>{window.pywebview.api.sound(muted);});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'){stopClip();window.pywebview.api.collapse();}});
+</script>"""
+
+
+def render_page(lang: str, *, desktop: bool = False) -> str:
     # Only fixed, allowlisted translations are interpolated, never URL input.
     labels = TEXT[lang]
     page = PAGE
     for key in ("locale", "heading", "loading", "refresh", "play_next", "mute", "sound_on"):
         page = page.replace(f"__{key.upper()}__", labels[key])
-    return page.replace("__TEXT__", json.dumps(labels, ensure_ascii=False)).replace(
+    page = page.replace("__TEXT__", json.dumps(labels, ensure_ascii=False)).replace(
         "__LANGUAGE__", json.dumps(lang)).replace("__CLIPS__", json.dumps([
             {"src": route, "audioOnly": path.suffix == ".m4a"}
             for route, path in MEDIA_PATHS.items()
         ]))
+    if desktop:
+        collapse = "收起" if lang == "zh" else "Collapse"
+        switch = "EN" if lang == "zh" else "ZH"
+        switch_label = "切换语言" if lang == "zh" else "Switch language"
+        controls = (f'<div class="tray-toolbar"><button id="language" aria-label="{switch_label}">{switch}</button>'
+                    f'<button id="collapse" aria-label="{collapse}" title="{collapse}">−</button></div>')
+        page = page.replace('</head>', TRAY_STYLE + '</head>').replace(
+            '<main class="card">', '<main class="card">' + controls).replace('</body>', TRAY_SCRIPT + '</body>')
+    return page
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -281,7 +316,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
-def create_handler(codex_home: Path, state_path: Path, lang: str = "zh"):
+def create_handler(codex_home: Path, state_path: Path, lang: str = "zh", *, desktop: bool = False):
     if lang not in TEXT:
         raise ValueError("Dashboard language must be zh or en")
 
@@ -354,7 +389,7 @@ def create_handler(codex_home: Path, state_path: Path, lang: str = "zh"):
             requested = parse_qs(url.query).get("lang", [lang])[-1]
             language = requested if requested in TEXT else lang
             if url.path == "/":
-                body = render_page(language).encode("utf-8")
+                body = render_page(language, desktop=desktop).encode("utf-8")
                 content_type, status = "text/html; charset=utf-8", 200
             elif url.path in IMAGE_TYPES:
                 try:

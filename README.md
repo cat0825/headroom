@@ -67,13 +67,17 @@ To expose `$headroom` as a Codex skill, install the repository through your loca
 ## Taskbar tray (Windows)
 
 - **Click** the H tray icon to expand/collapse. The `−` button or Escape also collapses the card. Hover over the icon to see percent left.
+- Add `--show` when launching to open the card immediately (exit any existing display first).
 - The card opens near the tray, inside the monitor's work area. Windows may initially place the icon under **Show hidden icons**; drag it onto the visible tray if desired.
 - **Right-click → Exit headroom** closes the display, not scoring. A later `SessionStart` can open it again.
 - The card shows the exact **percent left**, spent/cap points, the current meme, and a Refresh button.
+- **Click the meme** for the same clips and audio-reactive animation as the web dashboard. The small speaker button remembers mute; collapsing the card or switching languages stops playback. Nothing plays automatically when the card opens, and playing clips never spends points.
 - Use the card's **EN / ZH** button to switch languages live. Launch options: `--lang en` or `--lang zh`. Priority: CLI → `HEADROOM_LANG` → saved language → Chinese. Exit the existing display before changing startup options.
 - One display per shared ledger and Windows login session—even with multiple Codex sessions. Refresh runs every ten seconds, off the UI thread, and never calls a scorer.
 
-Tray mode needs Python with **Tk**, **pystray**, and **Pillow** (see `requirements-desktop.txt`). It does not need the web dashboard or any listening port. Only orb position/language are saved in `desktop.json` beside the ledger. It starts with a trusted Codex `SessionStart`, **not at Windows login**.
+The animated tray card needs Python with **Tk**, **pystray**, **Pillow**, **pywebview**, and the **Microsoft Edge WebView2 Runtime** (Python packages: `requirements-desktop.txt`). It runs in a native window, not a browser tab, and does not need the dashboard on port 8766. An internal read-only server binds only to `127.0.0.1` on a random free port for bundled media and balance data; it closes with the display. Only position, language, and mute preference are saved in `desktop.json` beside the ledger. It starts with a trusted Codex `SessionStart`, **not at Windows login**.
+
+If WebView2 is unavailable, exit the display and use `--renderer tk` for the original static tray card without a media player or listening port.
 
 Prefer the old draggable orb? Exit the tray display and launch with `--mode orb`. `--mode tray` is the default; `HEADROOM_DESKTOP_MODE=tray|orb` sets the startup default. Orb mode works without pystray; Pillow is optional there, with text faces for unsupported meme formats.
 
@@ -127,7 +131,7 @@ The adapter posts JSON with the current prompt in `state.body` and a `questions.
 | Current eligible prompt | Passes it in memory to mock scoring or the configured local Laya service |
 | Debit ledger | Stores an opaque event ID, local date, numeric score, and provider—not prompt text |
 | Hook diagnostics | Stores only the latest outcome, time, input-presence/length metadata, and scoring metadata—not prompt text or raw session/turn IDs |
-| Tray / desktop display | Reads local history metadata and the ledger directly; saves only orb position/language, and makes no network requests |
+| Tray / desktop display | Reads local history metadata and the ledger; the animated card uses an ephemeral loopback-only server and bundled media, with no cloud scoring; saves only position/language/mute |
 | Dashboard | Binds to `127.0.0.1`; images are bundled locally, with no CDN or analytics |
 
 The default shared ledger is `$CODEX_HOME/headroom/ledger.sqlite3` (otherwise `~/.codex/headroom/ledger.sqlite3`). `HEADROOM_STATE_PATH` can override it. Do not publish your runtime state, diagnostics, Codex history, or credentials.

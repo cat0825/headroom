@@ -80,18 +80,24 @@ def read_preferences(path: Path) -> dict:
                  if type(data.get(key)) is int and abs(data[key]) <= 100000}
         if data.get("lang") in ("zh", "en"):
             clean["lang"] = data["lang"]
+        if type(data.get("muted")) is bool:
+            clean["muted"] = data["muted"]
         return clean
     except (OSError, ValueError, UnicodeError):
         return {}
 
 
-def save_preferences(path: Path, x: int, y: int, lang: str) -> None:
+def save_preferences(path: Path, x: int, y: int, lang: str, muted: bool | None = None) -> None:
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".headroom-desktop-", dir=path.parent)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"x": int(x), "y": int(y), "lang": lang}, handle)
+            data = {"x": int(x), "y": int(y), "lang": lang}
+            muted = read_preferences(path).get("muted") if muted is None else muted
+            if type(muted) is bool:
+                data["muted"] = muted
+            json.dump(data, handle)
         os.replace(temporary, path)
     except OSError:
         pass  # Display remains usable on read-only filesystems.
@@ -480,6 +486,9 @@ def parse_args(argv=None):
     parser.add_argument("--lang", choices=TEXT, default=os.environ.get("HEADROOM_LANG"))
     parser.add_argument("--mode", choices=("tray", "orb"),
                         default=os.environ.get("HEADROOM_DESKTOP_MODE", "tray"))
+    parser.add_argument("--renderer", choices=("webview", "tk"), default="webview",
+                        help="tray card renderer; tk is a static, low-dependency fallback")
+    parser.add_argument("--show", action="store_true", help="expand the card on startup")
     args = parser.parse_args(argv)
     if args.lang is not None and args.lang not in TEXT:
         parser.error("HEADROOM_LANG must be zh or en")
@@ -502,9 +511,14 @@ def main():
     app = None
     root = None
     try:
+        if args.mode == "tray" and args.renderer == "webview":
+            from headroom_webcard import run
+            return run(args)
         root = tk.Tk()
         app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang, mode=args.mode)
         app.start()
+        if args.show:
+            root.after(0, app.toggle)
         root.mainloop()
     finally:
         if app is not None:

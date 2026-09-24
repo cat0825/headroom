@@ -97,6 +97,8 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(desktop.parse_args(["--lang", "zh"]).lang, "zh")
             self.assertEqual(args.settings_path, self.settings)
             self.assertEqual(args.mode, "tray")
+            self.assertEqual(args.renderer, "webview")
+            self.assertEqual(desktop.parse_args(["--renderer", "tk"]).renderer, "tk")
             self.assertEqual(desktop.parse_args(["--mode", "orb"]).mode, "orb")
         with patch.dict(os.environ, {"HEADROOM_DESKTOP_MODE": "orb"}):
             self.assertEqual(desktop.parse_args([]).mode, "orb")
