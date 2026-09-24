@@ -21,19 +21,51 @@ const cases = [
   [100, 'brain-full.png'],
 ];
 
-async function check(lang) {
+async function check(lang, storedMute = 'false', brokenStorage = false) {
   const page = pages[lang];
   if (lang === 'en') assert.doesNotMatch(page, /[\u3400-\u9fff]/);
-  const elements = Object.fromEntries(['mood-image','mood','value','meta','updated','fill','refresh'].map(id => [id, {
+  const elements = Object.fromEntries(['sound-toggle','sound-icon','sound-label','mood-image','mood-video','mood-feedback','mood','value','meta','updated','fill','refresh'].map(id => [id, {
     hidden: true, textContent: '', style: {}, classList: {add() {}, remove() {}},
     getAttribute(name) {return this[name];}, addEventListener(event, callback) {this[event] = callback;},
+    removeAttribute(name) {delete this[name];}, pause() {this.paused=true;}, load() {},
+    setAttribute(name,value) {this[name]=value;},
+    async play() {this.paused=false;},
   }]));
   let payload = {left_percent: 72.4, spent_points: 230.46, cap_points: 835};
   let failure = null;
   let interval;
+  let timerId=0;
+  const timers=new Map();
+  const frames=new Map();
+  let frameId=0, audioLevel=200, sourceCount=0, clickTime=0, randomValue=0;
+  const motion={matches:false};
+  let gain;
+  class FakeAudioContext {
+    sampleRate=48000;
+    destination={};
+    async resume() {}
+    createGain() {gain={gain:{value:1},connect(){}};return gain;}
+    createMediaElementSource() {sourceCount++;return {connect() {}};}
+    createAnalyser() {return {frequencyBinCount:256,getByteFrequencyData(data) {data.fill(audioLevel);}};}
+  }
+  function animate(now) {
+    const pending=[...frames.values()];frames.clear();
+    for(const callback of pending)callback(now);
+  }
   const context = vm.createContext({
+    Math:Object.assign(Object.create(Math),{random:()=>randomValue}),
+    performance: {now(){return clickTime;}},
     document: {getElementById(id) {assert.ok(elements[id], id); return elements[id];}},
     setInterval(callback, delay) {assert.equal(delay, 10000); interval = callback;},
+    setTimeout(callback) {timers.set(++timerId,callback);return timerId;},
+    clearTimeout(id) {timers.delete(id);},
+    requestAnimationFrame(callback) {frames.set(++frameId,callback);return frameId;},
+    cancelAnimationFrame(id) {frames.delete(id);},
+    window: {matchMedia() {return motion;},AudioContext:FakeAudioContext},
+    localStorage: {
+      getItem(key){assert.equal(key,'headroom-muted');if(brokenStorage)throw Error('blocked');return storedMute;},
+      setItem(key,value){assert.equal(key,'headroom-muted');if(brokenStorage)throw Error('blocked');storedMute=value;},
+    },
     async fetch(url, options) {
       assert.equal(url, '/api/status?lang=' + lang);
       assert.equal(options.cache, 'no-store');
@@ -53,6 +85,14 @@ async function check(lang) {
   assert.ok(elements.updated.textContent.startsWith(lang === 'en' ? 'Updated: ' : '最近刷新：'));
   assert.equal(typeof elements.refresh.click, 'function');
   assert.equal(typeof interval, 'function');
+  const sound=elements['sound-toggle'];
+  assert.equal(elements['mood-video'].muted,!brokenStorage&&storedMute==='true');
+  if(elements['mood-video'].muted)sound.click();
+  sound.click();assert.equal(elements['mood-video'].muted,true);
+  assert.equal(sound['aria-pressed'],'true');
+  assert.equal(elements['sound-label'].textContent,lang==='en'?'Muted':'已静音');
+  sound.click();assert.equal(elements['mood-video'].muted,false);
+  if(!brokenStorage)assert.equal(storedMute,'false');
 
   for (const [percent, file] of cases) {
     payload = {...payload, left_percent: percent};
@@ -63,12 +103,76 @@ async function check(lang) {
     if (lang === 'en') assert.doesNotMatch(elements['mood-image'].alt, /[\u3400-\u9fff]/);
     assert.equal(elements.fill.style.width, percent + '%');
   }
+  const video=elements['mood-video'], picture=elements['mood-image'];
+  async function finishHop() {
+    const pending=[...timers.values()];timers.clear();
+    for(const callback of pending)await callback();
+  }
+  // Each click starts exactly one clip, even while a clip is already playing.
+  const playlist=[
+    'dog-hey.mp4','dog-bark-1.mp4','dog-bark-2.mp4','dog-bark-3.mp4','dog-bark-4.mp4','dog-bark-5.mp4',
+    'dog-call.mp4','dog-dadada.m4a','dog-industry-baby.m4a',
+  ];
+  const draws=[0,0,0,.15,.3,.45,.6,.75,.9,0];
+  for(const [step,file] of [...playlist,playlist[0]].entries()) {
+    const audioOnly=file.endsWith('.m4a'), previousImage=picture.src;
+    randomValue=draws[step];clickTime+=step===9?3500:500;
+    elements.mood.click();
+    assert.equal(video.hidden,true);assert.equal(picture.hidden,false);
+    await finishHop();
+    assert.equal(video.src,'/assets/'+(audioOnly?'audio/':'videos/')+file);
+    assert.equal(video.hidden,audioOnly);assert.equal(video.paused,false);
+    assert.equal(picture.hidden,!audioOnly);assert.equal(picture.src,previousImage);
+    await interval();assert.equal(video.hidden,audioOnly);
+    if(audioOnly){
+      const currentSource=video.src;
+      sound.click();assert.equal(gain.gain.value,0);assert.equal(video.paused,false);
+      assert.equal(video.muted,false); // The pre-mute analyser still receives sound.
+      audioLevel=220;animate(10);animate(80);
+      const strong=picture.style.transform;
+      assert.match(strong,/translateY\(-[\d.]+px\) rotate\(-?[\d.]+deg\) scale\(1\.[\d]+\)/);
+      sound.click();assert.equal(gain.gain.value,1);assert.equal(video.src,currentSource);
+      audioLevel=0;
+      for(let time=180;time<3000;time+=100)animate(time);
+      assert.notEqual(picture.style.transform,strong);
+      assert.ok(Math.abs(Number(picture.style.transform.match(/rotate\(([-\d.]+)/)[1]))<1);
+      motion.matches=true;animate(3100);
+      assert.equal(picture.style.transform,'');assert.equal(frames.size,0);
+      motion.matches=false;
+      video.onended();assert.equal(picture.hidden,false);assert.equal(video.paused,true);
+      assert.equal(timers.size,0);
+      assert.equal(picture.style.transform,'');assert.equal(picture.style.filter,'');
+      assert.equal(frames.size,0);
+    }else{
+      assert.equal(frames.size,0);assert.equal(picture.style.transform,'');
+    }
+  }
+  assert.equal(sourceCount,1); // Reuse the media audio graph across tracks.
+  video.onended();
+  assert.equal(video.hidden,true);assert.equal(picture.hidden,false);
+  assert.equal(timers.size,0); // Ending never automatically starts another clip.
+  elements.mood.click();elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/videos/dog-bark-2.mp4');
+  const staleEnd=video.onended, staleError=video.onerror;
+  elements.mood.click();await finishHop();staleEnd();staleError();
+  assert.equal(video.src,'/assets/videos/dog-bark-1.mp4');
+  assert.equal(video.hidden,false);
+  elements.mood.keydown({key:'Escape'});assert.equal(video.hidden,true);
+  const originalPlay=video.play;
+  video.play=async()=>{throw Error('blocked');};
+  elements.mood.click();await finishHop();
+  assert.equal(video.hidden,true);assert.equal(elements['mood-feedback'].hidden,false);
+  video.play=originalPlay;elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/videos/dog-bark-2.mp4');
+  video.onerror();assert.equal(video.hidden,true);
+  elements.mood.click();await finishHop();
   for (const mode of ['network', 'http', 'json', 'data']) {
     failure = mode;
     if (mode === 'data') payload = {...payload, left_percent: null};
     await interval();
     assert.equal(elements.value.textContent, lang === 'en' ? 'Unavailable' : '不可用');
     assert.equal(elements.mood.hidden, true);
+    assert.equal(video.hidden,true);assert.equal(video.paused,true);
     assert.equal(elements.fill.style.width, '0%');
     assert.doesNotMatch(elements.meta.textContent, /untranslated/);
     if (lang === 'en') assert.doesNotMatch(elements.meta.textContent, /[\u3400-\u9fff]/);
@@ -78,9 +182,28 @@ async function check(lang) {
   await interval();
   assert.equal(elements.value.textContent, '100.00%');
   assert.equal(elements.mood.hidden, false);
+  // The window is measured from the preceding image click, not playback end.
+  for(const [gap,file] of [[4000,'dog-hey.mp4'],[3499,'dog-bark-1.mp4'],
+                          [3499,'dog-bark-2.mp4'],[3500,'dog-hey.mp4'],
+                          [3501,'dog-hey.mp4'],[100,'dog-bark-1.mp4']]){
+    clickTime+=gap;elements.mood.click();await finishHop();
+    assert.equal(video.src,'/assets/videos/'+file,`Click gap ${gap}`);
+  }
+  clickTime+=3500;sound.click();await interval();
+  elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/videos/dog-hey.mp4'); // Other controls never extend the streak.
+  randomValue=.999;
+  elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/audio/dog-industry-baby.m4a'); // Can jump straight to the last clip.
+  elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/audio/dog-dadada.m4a'); // Never immediately repeat or select Hey Dog.
+  clickTime+=3500;elements.mood.click();await finishHop();
+  assert.equal(video.src,'/assets/videos/dog-hey.mp4');
 }
 
 (async () => {
   for (const lang of ['en', 'zh']) await check(lang);
-  console.log('Passed 2 languages: initial render, 18 mood transitions, 8 error paths, refresh and recovery.');
+  await check('zh','true');
+  await check('en','false',true);
+  console.log('Passed: random selection, no consecutive repeats, 3.5-second reset, media playback, audio-reactive motion, mute and recovery in both languages.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

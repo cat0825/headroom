@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import headroom_dashboard as dashboard
@@ -101,6 +101,35 @@ class DashboardTests(unittest.TestCase):
                 self.assertNotIn("private-missing-history", body.decode())
                 if lang == "en":
                     self.assertNotRegex(body.decode(), r"[\u3400-\u9fff]")
+        self.assertFalse(self.state.exists())
+
+
+    def test_media_streams_ranges_and_allowlist(self):
+        opener = build_opener(ProxyHandler({}))
+        with self.server() as url:
+            for route, path in dashboard.MEDIA_PATHS.items():
+                data = path.read_bytes()
+                with opener.open(url + route) as response:
+                    self.assertEqual(response.headers['Content-Type'], 'audio/mp4' if path.suffix == '.m4a' else 'video/mp4')
+                    self.assertEqual(response.read(), data)
+                with opener.open(Request(url + route, method='HEAD')) as response:
+                    self.assertEqual(int(response.headers['Content-Length']), len(data))
+                    self.assertEqual(response.read(), b'')
+                for value, start, end in [('bytes=0-31', 0, 31),
+                                          ('bytes=-20', len(data)-20, len(data)-1),
+                                          (f'bytes={len(data)-16}-', len(data)-16, len(data)-1)]:
+                    with opener.open(Request(url + route, headers={'Range': value})) as response:
+                        self.assertEqual(response.status, 206)
+                        self.assertEqual(response.headers['Content-Range'], f'bytes {start}-{end}/{len(data)}')
+                        self.assertEqual(response.read(), data[start:end+1])
+                for value in ['bytes=999999999-', 'bytes=-0', 'bytes=2-1', 'bytes=0-1,4-5']:
+                    with self.assertRaises(HTTPError) as raised:
+                        opener.open(Request(url + route, headers={'Range': value}))
+                    with raised.exception as error:
+                        self.assertEqual(error.code, 416)
+                        self.assertEqual(error.headers['Content-Range'], f'bytes */{len(data)}')
+            self.assertEqual(self.read(url + '/assets/videos/dog-bark-6.mp4')[0], 404)
+            self.assertEqual(self.read(url + '/assets/videos/../../scripts/headroom.py')[0], 404)
         self.assertFalse(self.state.exists())
 
 
