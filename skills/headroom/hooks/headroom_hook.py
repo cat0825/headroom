@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -50,6 +51,12 @@ ENV_MARKERS = (
     ("GEMINI_DIR", "antigravity"),
     ("WORKBUDDY_HOME", "workbuddy"),
     ("CODEX_HOME", "codex"),
+)
+
+AMBIENT_BROWSER_CONTEXT = re.compile(
+    r'\A<in-app-browser-context source="ambient-ui-state">\r?\n'
+    r'.*?\r?\n</in-app-browser-context>\r?\n\r?\n## My request:\r?\n',
+    re.DOTALL,
 )
 
 
@@ -101,6 +108,15 @@ def first_string(event: dict, keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def scorable_prompt(event: dict) -> str | None:
+    """Remove Codex browser state that accompanies, but is not, a user request."""
+    prompt = first_string(event, FIELD_ALIASES["prompt"])
+    if prompt is None:
+        return None
+    wrapper = AMBIENT_BROWSER_CONTEXT.match(prompt)
+    return prompt[wrapper.end():] if wrapper else prompt
+
+
 def detect_agent(event: dict) -> str:
     """Which agent fired this hook.
 
@@ -149,7 +165,7 @@ def debug_hook_event(event: dict, chargeable: bool, outcome: str = "received",
     )
     if not target:
         return
-    prompt = first_string(event, FIELD_ALIASES["prompt"])
+    prompt = scorable_prompt(event)
     record = {
         "at": datetime.now(timezone.utc).isoformat(),
         "outcome": outcome,
@@ -194,6 +210,19 @@ def dashboard_is_up(port: int) -> bool:
         return False
 
 
+def spawn_detached(command: list[str], cwd: str | None) -> None:
+    """Start a display that outlives this short-lived hook process.
+
+    Windows hides the console window. On macOS/Linux a new session keeps the
+    display out of Codex's process group and terminal (no SIGHUP/SIGINT).
+    """
+    options = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+               if sys.platform == "win32" else {"start_new_session": True})
+    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, **options)
+
+
 def start_dashboard(cwd: str | None) -> None:
     # Lifecycle smoke tests must not leave a production-port server pointing
     # at a temporary ledger that disappears when the test finishes.
@@ -206,10 +235,7 @@ def start_dashboard(cwd: str | None) -> None:
     command = [python_background(), str(dashboard), "--port", str(port),
                "--codex-home", str(codex_home()),
                "--state-path", str(state_path(cwd))]
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=creationflags, close_fds=True)
+    spawn_detached(command, cwd)
 
 
 def start_display(cwd: str | None) -> None:
@@ -224,15 +250,15 @@ def start_display(cwd: str | None) -> None:
     if mode in {"desktop", "both"} and os.environ.get("HEADROOM_DISABLE_DESKTOP") != "1":
         command = [python_background(), str(scorer_path().with_name("headroom_desktop.py")),
                    "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
-        # The desktop process owns a Windows named mutex, so concurrent
-        # SessionStart events cannot leave multiple balls on the desktop.
-        subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
+        # The desktop process owns a per-ledger lock (a Windows named mutex,
+        # or flock elsewhere), so concurrent SessionStart events cannot leave
+        # multiple displays on the desktop.
+        spawn_detached(command, cwd)
 
 
 def is_chargeable(event: dict) -> bool:
-    if first_string(event, FIELD_ALIASES["prompt"]) is None:
+    prompt = scorable_prompt(event)
+    if not prompt or not prompt.strip():
         return False
     if first_string(event, FIELD_ALIASES["session_id"]) is None:
         return False
@@ -285,7 +311,7 @@ def charge(event: dict) -> None:
         debug_hook_event(event, True, "invalid_backend_config")
         return
     agent = detect_agent(event)
-    prompt = first_string(event, FIELD_ALIASES["prompt"]) or ""
+    prompt = scorable_prompt(event) or ""
     # Keep standard input available; CREATE_NO_WINDOW hides console windows.
     executable = Path(sys.executable)
     if executable.name.lower() == "pythonw.exe":

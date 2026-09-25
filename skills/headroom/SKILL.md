@@ -100,6 +100,8 @@ node skills/headroom/tests/test_dashboard_mood.js
 
 On Windows, install the user hook with `powershell -ExecutionPolicy Bypass -File hooks/install_windows.ps1` from this skill directory. Existing `hooks.json` is never overwritten without `-Force`; merge manually if it already exists.
 
+On macOS or Linux, run `sh hooks/install.sh` from this skill directory. It merges headroom's entries into `hooks.json` and backs up the file; `--uninstall` removes only those entries. macOS can show a menu bar icon with the static Tk card, or use `--mode orb`. If Tk or tray packages are unavailable, the desktop display falls back to the web dashboard.
+
 The installer wires up **Codex** only. The other agents are read-only: they contribute to the cap and the per-agent breakdown, but their turns are not charged. Their hooks can be added by hand — the hook normalizes each agent's payload and reads `HEADROOM_AGENT` when it is set, so a hook definition that exports that variable works without further changes.
 
 Review and trust the two definitions in Codex `/hooks`, then start a new session. Plugin installation or implicit skill selection alone does not activate lifecycle hooks. `SessionStart` defaults to the tray display on Windows, and the loopback dashboard elsewhere. `HEADROOM_DISPLAY=web|desktop|both|off` selects the display; `off` does not disable charging. Quitting the display leaves charging enabled; it can be manually started or reopened by the next session. No Windows-login startup is installed. `UserPromptSubmit` scores asynchronously and never blocks a response. Use temporary ledgers for tests and set `HEADROOM_DISABLE_DASHBOARD=1` to suppress all lifecycle displays.
