@@ -9,12 +9,28 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+AMBIENT_BROWSER_CONTEXT = re.compile(
+    r'\A<in-app-browser-context source="ambient-ui-state">\r?\n'
+    r'.*?\r?\n</in-app-browser-context>\r?\n\r?\n## My request:\r?\n',
+    re.DOTALL,
+)
+
+
+def direct_user_prompt(prompt: object) -> str | None:
+    """Exclude Codex's browser context wrapper from the text sent to a scorer."""
+    if not isinstance(prompt, str):
+        return None
+    wrapper = AMBIENT_BROWSER_CONTEXT.match(prompt)
+    return prompt[wrapper.end():] if wrapper else prompt
 
 
 def plugin_root() -> Path:
@@ -66,11 +82,12 @@ def debug_hook_event(event: dict, chargeable: bool, outcome: str = "received",
     )
     if not target:
         return
+    prompt = direct_user_prompt(event.get("prompt"))
     record = {
         "at": datetime.now(timezone.utc).isoformat(),
         "outcome": outcome,
         "has_prompt": isinstance(event.get("prompt"), str),
-        "prompt_length": len(event["prompt"]) if isinstance(event.get("prompt"), str) else 0,
+        "prompt_length": len(prompt) if prompt is not None else 0,
         "has_session_id": isinstance(event.get("session_id"), str) and bool(event["session_id"]),
         "has_turn_id": isinstance(event.get("turn_id"), str) and bool(event["turn_id"]),
         "chargeable": chargeable,
@@ -156,7 +173,8 @@ def start_display(cwd: str | None) -> None:
 
 
 def is_chargeable(event: dict) -> bool:
-    if not isinstance(event.get("prompt"), str) or not event["prompt"].strip():
+    prompt = direct_user_prompt(event.get("prompt"))
+    if not prompt or not prompt.strip():
         return False
     if not isinstance(event.get("session_id"), str) or not event["session_id"]:
         return False
@@ -177,6 +195,7 @@ def is_chargeable(event: dict) -> bool:
 
 
 def charge(event: dict) -> None:
+    event = {**event, "prompt": direct_user_prompt(event.get("prompt"))}
     chargeable = is_chargeable(event)
     debug_hook_event(event, chargeable)
     if not chargeable:

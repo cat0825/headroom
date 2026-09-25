@@ -355,6 +355,28 @@ class InstalledHooksEndToEndTests(unittest.TestCase):
         self.assertFalse(skill_link.exists())
         self.assertEqual(self.debit_count(), 1)
 
+    def test_browser_context_is_not_scored_as_user_text(self):
+        installed = self.install("--display", "off")
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        config = json.loads((self.codex / "hooks.json").read_text(encoding="utf-8"))
+        context = ('<in-app-browser-context source="ambient-ui-state">\n'
+                   + "Browser state? " * 30
+                   + '\n</in-app-browser-context>\n\n## My request:\n')
+        event = {"session_id": "browser-session", "turn_id": "turn-1",
+                 "hook_event_name": "UserPromptSubmit", "permission_mode": "default",
+                 "prompt": context + "现在呢？"}
+        result = self.run_hook(config, "UserPromptSubmit", event)
+        self.assertEqual(result["outcome"], "charged")
+        self.assertEqual(result["charged_points"], 2.0)
+        self.assertEqual(result["prompt_length"], len("现在呢？"))
+        self.assertEqual(self.debit_count(), 1)
+
+        event["turn_id"] = "turn-2"
+        event["prompt"] = context + "  "
+        self.assertEqual(self.run_hook(config, "UserPromptSubmit", event)["outcome"],
+                         "ineligible")
+        self.assertEqual(self.debit_count(), 1)
+
 
 class HookLaunchTests(unittest.TestCase):
     def test_display_processes_are_detached_per_platform(self):
