@@ -11,6 +11,7 @@ import math
 import os
 import queue
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -63,6 +64,28 @@ if sys.platform == "darwin":
 else:
     UI_FONT, CJK_FONT = "Segoe UI", "Microsoft YaHei UI"
 INK, BLUE, MUTED = "#14213d", "#2563eb", "#61708c"
+#: Audio-only clips, the same ones the web dashboard's mood button plays.
+MOOD_CLIPS = ("dog-dadada.m4a", "dog-industry-baby.m4a")
+#: How far the mood image hops when clicked, in pixels.
+MOOD_HOP = 7
+
+
+def play_clip(name: str) -> None:
+    """Play one bundled clip. macOS uses its own ``afplay``; elsewhere silent.
+
+    Tk cannot decode video, so the tray card plays audio only — the animated
+    clips stay in the web dashboard.
+    """
+    if sys.platform != "darwin":
+        return
+    path = ASSET_DIR / "audio" / name
+    if not path.is_file():
+        return
+    try:
+        subprocess.Popen(["afplay", str(path)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
 TEXT = {
     "zh": {**WEB_TEXT["zh"], "open": "展开用量", "collapse": "收起",
            "exit": "退出 headroom", "language": "语言", "english": "英文", "chinese": "中文",
@@ -305,6 +328,11 @@ class DesktopOrb:
         self.poll_id = self.refresh_id = None
         self.press = None
         self.dragged = False
+        # Mood-image click state: a hop that must survive a repaint, plus a
+        # rotating clip so repeated clicks do not repeat the same sound.
+        self.mood_hop_id = None
+        self.mood_hop_token = 0
+        self.mood_clip = 0
         area = work_area(root, saved.get("x", 0), saved.get("y", 0))
         self.x, self.y = clamp_position(saved.get("x", area[2]-BALL-24),
                                        saved.get("y", area[3]-BALL-32), BALL, BALL, area)
@@ -332,6 +360,10 @@ class DesktopOrb:
         self.card = tk.Canvas(self.panel, width=CARD_W, height=CARD_H,
                               bg=TRANSPARENT, highlightthickness=0)
         self.card.pack()
+        # Bound once; paint() re-tags the mood plate and image on every redraw.
+        self.card.tag_bind("mood", "<ButtonRelease-1>", lambda _event: self.play_mood())
+        self.card.tag_bind("mood", "<Enter>", lambda _event: self.card.configure(cursor="hand2"))
+        self.card.tag_bind("mood", "<Leave>", lambda _event: self.card.configure(cursor=""))
         self.language_button = flat_button(self.panel, command=self.switch_language, relief="flat",
                                         bg="white", fg=MUTED, bd=0, cursor="hand2", font=(UI_FONT, 10))
         self.language_button.place(x=231, y=17, width=34, height=28)
@@ -377,13 +409,52 @@ class DesktopOrb:
         if self.busy or self.closed:
             return
         self.busy = True
+        # Show the click immediately: the number rarely changes between two
+        # reads, so without this a refresh looks like nothing happened.
+        self.refresh_button.configure(text=TEXT[self.lang]["loading"])
+
         def read():
             try:
                 data = read_usage(self.codex_home, self.state_path, self.adapters)
-            except (OSError, sqlite3.Error, RuntimeError, ValueError, TypeError):
+            except Exception:  # a reader must never wedge the button
                 data = None
-            self.results.put((data, datetime.now().strftime("%H:%M:%S")))
+            finally:
+                # poll() clears busy only when a result arrives, so a reader
+                # that raised something unexpected would otherwise leave the
+                # button permanently inert. A full queue is also resolved here
+                # rather than left to wedge the next refresh.
+                try:
+                    self.results.put_nowait((data, datetime.now().strftime("%H:%M:%S")))
+                except queue.Full:
+                    try:
+                        self.results.get_nowait()
+                        self.results.put_nowait((data, datetime.now().strftime("%H:%M:%S")))
+                    except (queue.Empty, queue.Full):
+                        pass
+
         threading.Thread(target=read, daemon=True, name="headroom-reader").start()
+
+    def play_mood(self):
+        """Hop the mood image and play a clip — the dashboard's click, in Tk.
+
+        Tk cannot decode the bundled videos, so the card plays their audio and
+        animates the still. The token guards against a repaint landing between
+        the hop and the settle, which would otherwise leave the image offset.
+        """
+        self.mood_hop_token += 1
+        token = self.mood_hop_token
+        self.card.move("mood", 0, -MOOD_HOP)
+        if self.mood_hop_id:
+            self.root.after_cancel(self.mood_hop_id)
+        self.mood_hop_id = self.root.after(180, lambda: self.settle_mood(token))
+        name = MOOD_CLIPS[self.mood_clip % len(MOOD_CLIPS)]
+        self.mood_clip += 1
+        play_clip(name)
+
+    def settle_mood(self, token):
+        self.mood_hop_id = None
+        if not self.closed and token == self.mood_hop_token:
+            self.card.move("mood", 0, MOOD_HOP)
 
     def periodic_refresh(self):
         if not self.closed:
@@ -481,15 +552,16 @@ class DesktopOrb:
                          font=(CJK_FONT, 11))
 
         # Mood thumbnail on a soft plate so a transparent PNG still reads.
-        rounded(card, 236, 66, 296, 126, 14, fill="#f5f8fd", outline="")
+        # Tagged "mood" so a click hops it and plays a clip.
+        rounded(card, 236, 66, 296, 126, 14, fill="#f5f8fd", outline="", tags="mood")
         if view["image"]:
             picture = self.mood_image(view["image"])
             if picture:
-                card.create_image(266, 96, image=picture)
+                card.create_image(266, 96, image=picture, tags="mood")
             else:
                 card.create_text(266, 96,
                                  text=":)" if view["percent"] >= 70 else ":(" if view["percent"] >= 30 else ":O",
-                                 fill=view["color"], font=(UI_FONT, 24, "bold"))
+                                 fill=view["color"], font=(UI_FONT, 24, "bold"), tags="mood")
 
         # A thin, rounded meter instead of the old heavy bar.
         card.create_line(28, 156, CARD_W-28, 156, width=6, fill="#e8edf6", capstyle="round")
