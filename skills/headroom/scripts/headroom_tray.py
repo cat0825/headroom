@@ -50,26 +50,88 @@ def draw_icon(percent, color):
     return image
 
 
-def custom_icon_path() -> Path | None:
+def custom_icon_path(dark: bool = False) -> Path | None:
     """A user-supplied icon, if one is installed.
 
     Checked before the drawn icon so a generated image can be dropped in
-    without touching code. ``HEADROOM_ICON`` wins.
+    without touching code. ``HEADROOM_ICON`` wins. A ``-dark`` sibling is used
+    on a dark menu bar when present; otherwise the light one is recoloured.
     """
     import os
     configured = os.environ.get("HEADROOM_ICON")
-    candidates = [Path(configured).expanduser()] if configured else []
-    candidates.append(Path(__file__).resolve().parents[1] / "assets" / "menubar-icon.png")
-    candidates.append(Path.home() / ".headroom" / "icon.png")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+    assets = Path(__file__).resolve().parents[1] / "assets"
+    stems = ([Path(configured).expanduser()] if configured else [])
+    stems += [assets / "menubar-icon.png", Path.home() / ".headroom" / "icon.png"]
+    for stem in stems:
+        if dark:
+            variant = stem.with_name(stem.stem + "-dark" + stem.suffix)
+            if variant.is_file():
+                return variant
+        if stem.is_file():
+            return stem
     return None
 
 
-def icon_image(percent, color, path: Path | None = None):
+def system_is_dark() -> bool:
+    """Is the system in dark appearance? False when it cannot be determined."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        from AppKit import NSApp, NSAppearanceNameDarkAqua, NSApplication
+        NSApplication.sharedApplication()
+        appearance = NSApp.effectiveAppearance()
+        if appearance is None:
+            return False
+        matched = appearance.bestMatchFromAppearancesWithNames_([NSAppearanceNameDarkAqua])
+        return matched == NSAppearanceNameDarkAqua
+    except Exception:
+        pass
+    try:
+        import subprocess
+        result = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                                capture_output=True, text=True, timeout=3)
+        return result.stdout.strip().lower() == "dark"
+    except Exception:
+        return False
+
+
+#: What dark parts of a custom icon become on a dark menu bar.
+DARK_REPLACEMENT = (201, 212, 232)
+
+
+def lighten_for_dark(image):
+    """Lift a custom icon's dark areas so they read on a dark menu bar.
+
+    A hand-drawn icon usually pairs a dark accent with one bright accent; the
+    dark half disappears against a dark menu bar. Pixels below the accent's
+    brightness are blended toward a light slate, which keeps the shape and
+    leaves the bright accent untouched. Run this after downscaling — it walks
+    every pixel.
+    """
+    out = image.copy()
+    pixels = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = pixels[x, y]
+            if a == 0:
+                continue
+            level = max(r, g, b)
+            if level >= 120:
+                continue  # the bright accent colour stays as it is
+            weight = (120 - level) / 120
+            pixels[x, y] = (
+                int(r + (DARK_REPLACEMENT[0] - r) * weight),
+                int(g + (DARK_REPLACEMENT[1] - g) * weight),
+                int(b + (DARK_REPLACEMENT[2] - b) * weight),
+                a,
+            )
+    return out
+
+
+def icon_image(percent, color, path: Path | None = None, dark: bool = False):
     """The icon to hand pystray: a custom file when present, else the drawn one."""
-    resolved = path if path is not None else custom_icon_path()
+    explicit_dark = path is not None and path.stem.endswith("-dark")
+    resolved = path if path is not None else custom_icon_path(dark)
     if resolved is not None:
         try:
             from PIL import Image
@@ -77,6 +139,8 @@ def icon_image(percent, color, path: Path | None = None):
                 image = source.convert("RGBA")
             # Menu bar slots are square; letterbox rather than distort.
             image.thumbnail((ICON_PX, ICON_PX), Image.Resampling.LANCZOS)
+            if dark and not explicit_dark:
+                image = lighten_for_dark(image)
             canvas = Image.new("RGBA", (ICON_PX, ICON_PX), (0, 0, 0, 0))
             canvas.paste(image, ((ICON_PX - image.width) // 2,
                                  (ICON_PX - image.height) // 2), image)
@@ -101,11 +165,12 @@ class TrayIcon:
         self.ready, self.stopped = threading.Event(), threading.Event()
         self.error = None
         self.thread = None
-        self.custom = custom_icon_path()
-        self.icon_key = (view["orb"], view["color"])
+        self.dark = system_is_dark()
+        self.custom = custom_icon_path(self.dark)
+        self.icon_key = (view["orb"], view["color"], self.dark)
         item, menu = pystray.MenuItem, pystray.Menu
         self.icon = pystray.Icon(
-            "headroom", icon_image(view["percent"], view["color"], self.custom),
+            "headroom", icon_image(view["percent"], view["color"], self.custom, self.dark),
             self.title(view),
             menu(
                 item(lambda _: self.labels["collapse"] if self.expanded else self.labels["open"],
@@ -181,9 +246,12 @@ class TrayIcon:
         menu_changed = labels != self.labels or expanded != self.expanded
         self.labels, self.expanded = labels, expanded
         self.icon.title = self.title(view)
-        key = (view["orb"], view["color"])
+        # Re-check the appearance so the icon follows a light/dark switch.
+        self.dark = system_is_dark()
+        key = (view["orb"], view["color"], self.dark)
         if key != self.icon_key:
-            self.icon.icon = icon_image(view["percent"], view["color"], self.custom)
+            self.custom = custom_icon_path(self.dark)
+            self.icon.icon = icon_image(view["percent"], view["color"], self.custom, self.dark)
             self.icon_key = key
         if menu_changed:
             self.icon.update_menu()

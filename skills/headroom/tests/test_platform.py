@@ -210,6 +210,52 @@ class HookLaunchTests(unittest.TestCase):
             spawn.assert_not_called()
 
 
+class TrayIconTests(unittest.TestCase):
+    """A custom icon has to survive both menu bar appearances."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        try:
+            import PIL  # noqa: F401 — Pillow is an optional desktop extra
+            import headroom_tray
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        self.tray = headroom_tray
+
+    def test_dark_pixels_lighten_and_the_accent_survives(self):
+        from PIL import Image
+        image = Image.new("RGBA", (2, 1))
+        image.putpixel((0, 0), (16, 32, 64, 255))    # dark navy
+        image.putpixel((1, 0), (32, 96, 240, 255))   # bright accent
+        out = self.tray.lighten_for_dark(image)
+        navy = out.getpixel((0, 0))
+        accent = out.getpixel((1, 0))
+        self.assertGreater(sum(navy[:3]), sum((16, 32, 64)))
+        self.assertEqual(accent[:3], (32, 96, 240))
+        self.assertEqual(out.getpixel((0, 0))[3], 255)
+
+    def test_transparent_pixels_stay_transparent(self):
+        from PIL import Image
+        image = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        self.assertEqual(self.tray.lighten_for_dark(image).getpixel((0, 0)), (0, 0, 0, 0))
+
+    def test_a_dark_sibling_wins_in_dark_mode(self):
+        with tempfile.TemporaryDirectory() as temp:
+            light = Path(temp) / "menubar-icon.png"
+            dark = Path(temp) / "menubar-icon-dark.png"
+            light.write_bytes(b"x")
+            env = {"HEADROOM_ICON": str(light)}
+            with patch.dict(os.environ, env, clear=False):
+                self.assertEqual(self.tray.custom_icon_path(False), light)
+                # No sibling yet: the light file is reused.
+                self.assertEqual(self.tray.custom_icon_path(True), light)
+                dark.write_bytes(b"x")
+                self.assertEqual(self.tray.custom_icon_path(True), dark)
+
+    def test_appearance_probe_never_raises(self):
+        self.assertIn(self.tray.system_is_dark(), (True, False))
+
+
 class TclLibraryTests(unittest.TestCase):
     """A detached venv process loses Tcl's search path; headroom sets it."""
 
