@@ -517,7 +517,15 @@ def agents_report(as_of: date, adapters: list[AgentAdapter] | None = None) -> di
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    # allow_abbrev=False is load-bearing, not tidiness. The subcommands take
+    # --agent, and the top-level parser takes --agent-home and --agents. Up to
+    # Python 3.11, argparse resolves option abbreviations while pre-scanning
+    # every argument, so it read the subcommand's --agent as an ambiguous
+    # abbreviation of the two top-level options and exited 2 with
+    # "ambiguous option: --agent could match --agent-home, --agents" — before
+    # the subcommand ever saw it. The hook shells out with exactly that flag, so
+    # on 3.10/3.11 every turn silently failed to charge.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     # CODEX_HOME is honoured by the codex adapter's default root, and
     # default_state_path() falls back to the legacy Codex-era ledger.
     parser.add_argument("--codex-home", type=Path, default=None,
