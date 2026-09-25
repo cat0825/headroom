@@ -176,6 +176,32 @@ class HeadroomTests(unittest.TestCase):
         self.assertEqual(result["left_percent"], 100)
         self.assertEqual(result["spent_points"], 0)
 
+    def test_hook_argv_shape_is_not_an_ambiguous_option_abbreviation(self):
+        """The exact argv the hook shells out with must parse.
+
+        The subcommands take ``--agent`` while the top-level parser takes
+        ``--agent-home`` and ``--agents``. Up to Python 3.11, argparse resolves
+        option abbreviations while pre-scanning *every* argument, so it read the
+        subcommand's ``--agent`` as an ambiguous abbreviation of the two
+        top-level options and exited 2 with "ambiguous option: --agent could
+        match --agent-home, --agents" — before the subcommand ever saw it. The
+        hook passes exactly this argv, so on 3.10/3.11 every turn silently
+        failed to charge.
+        """
+        parser = budget.build_parser()
+        argv = ["--state-path", str(self.state), "turn",
+                "--event-id", "hook-" + "a" * 40, "--light",
+                "--origin", "manual-user", "--mode", "normal",
+                "--backend", "mock", "--agent", "claude"]
+        args = parser.parse_args(argv)
+        self.assertEqual(args.command, "turn")
+        self.assertEqual(args.agent, "claude")
+        self.assertTrue(args.light)
+        # The two top-level options that made it ambiguous must still parse.
+        self.assertEqual(parser.parse_args(["--agents", "codex", "status"]).agents, "codex")
+        self.assertEqual(parser.parse_args(["--agent-home", "codex=/tmp", "status"]).agent_home,
+                         ["codex=/tmp"])
+
     def invoke_hook(self, payload: bytes, via_powershell: bool = False):
         hook = Path(__file__).resolve().parents[1] / "hooks" / "headroom_hook.py"
         env = {key: value for key, value in os.environ.items()
