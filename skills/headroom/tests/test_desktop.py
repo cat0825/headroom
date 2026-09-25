@@ -43,7 +43,9 @@ class DesktopTests(unittest.TestCase):
             self.assertFalse(self.state.exists())
             day = datetime.now(budget.SHANGHAI).date()
             with contextlib.closing(budget.open_state(self.state, create=True)) as conn:
-                conn.execute("INSERT INTO debits VALUES (?, ?, ?, ?)", ("fixture", day.isoformat(), 2.5, "fixture"))
+                conn.execute("INSERT INTO debits (event_id, local_day, points, provider) "
+                             "VALUES (?, ?, ?, ?)",
+                             ("fixture", day.isoformat(), 2.5, "fixture"))
                 conn.commit()
             before = self.state.read_bytes()
             for _ in range(3):
