@@ -7,6 +7,12 @@ from __future__ import annotations
 
 import sys
 import threading
+from pathlib import Path
+
+#: Size the icon is authored at, in pixels. The menu bar draws it near 18pt.
+ICON_PX = 64
+#: Menu bar items are tiny; this is the widest the ring may get.
+RING_INSET = 5
 
 
 def hide_dock_icon():
@@ -19,18 +25,65 @@ def hide_dock_icon():
 
 
 def draw_icon(percent, color):
+    """The built-in icon: a gauge ring around a bold H.
+
+    Everything is drawn with thick strokes on a transparent background so it
+    survives being scaled down to a menu bar, where a 1px detail is invisible.
+    """
     from PIL import Image, ImageDraw
-    image = Image.new("RGBA", (64, 64))
+    image = Image.new("RGBA", (ICON_PX, ICON_PX), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.ellipse((2, 2, 61, 61), fill="#14213d")
-    draw.ellipse((5, 5, 58, 58), outline="#61708c", width=5)
+    outer = (1, 1, ICON_PX - 2, ICON_PX - 2)
+    # A dark disc keeps the mark legible on light *and* dark menu bars.
+    draw.ellipse(outer, fill="#14213d")
+    ring = (RING_INSET, RING_INSET, ICON_PX - RING_INSET - 1, ICON_PX - RING_INSET - 1)
+    width = 5
+    draw.arc(ring, 0, 360, fill="#3d5273", width=width)
     if percent:
-        draw.arc((5, 5, 58, 58), -90, -90 + 3.6 * percent, fill=color, width=5)
-    # A legible H at taskbar sizes, without depending on installed fonts.
-    draw.line((23, 21, 23, 43), fill="white", width=6)
-    draw.line((41, 21, 41, 43), fill="white", width=6)
-    draw.line((23, 32, 41, 32), fill="white", width=6)
+        draw.arc(ring, -90, -90 + 3.6 * min(100.0, percent), fill=color, width=width)
+    # A legible H without depending on installed fonts: two stems and a bar.
+    left, right = 22, 42
+    top, bottom, mid = 21, 43, 32
+    for x in (left, right):
+        draw.line((x, top, x, bottom), fill="white", width=7)
+    draw.line((left, mid, right, mid), fill="white", width=7)
     return image
+
+
+def custom_icon_path() -> Path | None:
+    """A user-supplied icon, if one is installed.
+
+    Checked before the drawn icon so a generated image can be dropped in
+    without touching code. ``HEADROOM_ICON`` wins.
+    """
+    import os
+    configured = os.environ.get("HEADROOM_ICON")
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(Path(__file__).resolve().parents[1] / "assets" / "menubar-icon.png")
+    candidates.append(Path.home() / ".headroom" / "icon.png")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def icon_image(percent, color, path: Path | None = None):
+    """The icon to hand pystray: a custom file when present, else the drawn one."""
+    resolved = path if path is not None else custom_icon_path()
+    if resolved is not None:
+        try:
+            from PIL import Image
+            with Image.open(resolved) as source:
+                image = source.convert("RGBA")
+            # Menu bar slots are square; letterbox rather than distort.
+            image.thumbnail((ICON_PX, ICON_PX), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGBA", (ICON_PX, ICON_PX), (0, 0, 0, 0))
+            canvas.paste(image, ((ICON_PX - image.width) // 2,
+                                 (ICON_PX - image.height) // 2), image)
+            return canvas
+        except (OSError, ValueError):
+            pass  # A broken custom icon must not take the tray down.
+    return draw_icon(percent, color)
 
 
 class TrayIcon:
@@ -48,10 +101,12 @@ class TrayIcon:
         self.ready, self.stopped = threading.Event(), threading.Event()
         self.error = None
         self.thread = None
+        self.custom = custom_icon_path()
         self.icon_key = (view["orb"], view["color"])
         item, menu = pystray.MenuItem, pystray.Menu
         self.icon = pystray.Icon(
-            "headroom", draw_icon(view["percent"], view["color"]), self.title(view),
+            "headroom", icon_image(view["percent"], view["color"], self.custom),
+            self.title(view),
             menu(
                 item(lambda _: self.labels["collapse"] if self.expanded else self.labels["open"],
                      self.action("toggle"), default=True),
@@ -65,8 +120,10 @@ class TrayIcon:
         )
 
     def title(self, view):
-        value = f"{view['value']} left" if view["percent"] is not None else self.labels["desktop_error"]
-        return "headroom · " + value
+        """Hover text. Uses the card's own labels so it follows the language."""
+        if view["percent"] is None:
+            return "headroom · " + self.labels["desktop_error"]
+        return f"headroom · {view['value']} {self.labels['left']}"
 
     def action(self, name):
         def enqueue(_icon, _item):
@@ -126,7 +183,7 @@ class TrayIcon:
         self.icon.title = self.title(view)
         key = (view["orb"], view["color"])
         if key != self.icon_key:
-            self.icon.icon = draw_icon(view["percent"], view["color"])
+            self.icon.icon = icon_image(view["percent"], view["color"], self.custom)
             self.icon_key = key
         if menu_changed:
             self.icon.update_menu()

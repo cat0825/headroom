@@ -37,6 +37,7 @@ TEXT = {
     "zh": {
         "locale": "zh-CN", "heading": "脑力剩余", "loading": "读取中...",
         "refresh": "刷新", "spent": "已用", "points": "点", "updated": "最近刷新：",
+        "left": "剩余", "of_cap": "上限",
         "unavailable": "不可用", "read_failed": "读取失败，请稍后刷新",
         "invalid_data": "脑力数据不可用",
         "status_error": "无法读取本机 AI 历史或 headroom 账本",
@@ -52,6 +53,7 @@ TEXT = {
     "en": {
         "locale": "en-US", "heading": "Headroom", "loading": "Loading...",
         "refresh": "Refresh", "spent": "Used", "points": "points", "updated": "Updated: ",
+        "left": "left", "of_cap": "of",
         "unavailable": "Unavailable", "read_failed": "Unable to load. Please refresh.",
         "invalid_data": "Headroom data is unavailable",
         "status_error": "Unable to read local AI history or the headroom ledger",
