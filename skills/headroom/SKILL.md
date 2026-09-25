@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Track a playful daily headroom meter for direct Codex user turns, or report its remaining percentage. The optional local hook charges turns automatically; this is entertainment, not a cognitive measurement.
+description: Track a playful daily headroom meter pooled across every local AI agent (Codex, Claude Code, opencode, Antigravity/Gemini, WorkBuddy). Reads each agent's own local history; the Codex hook charges turns automatically. Entertainment, not a cognitive measurement.
 ---
 
 # headroom
@@ -9,14 +9,95 @@ description: Track a playful daily headroom meter for direct Codex user turns, o
 
 This is an entertainment-only meter, not a measure of intelligence or health. The default scorer is a deterministic fake Jev API; `--backend laya` sends the prompt only to the user's loopback Laya service at `http://127.0.0.1:8765/predict`. No cloud Jev API is implemented.
 
-The installed `UserPromptSubmit` hook, when trusted, owns automatic charging. It rereads `$CODEX_HOME/headroom/config.json` on each turn; `{"backend":"laya"}` selects the separately running loopback Laya service. `HEADROOM_BACKEND` overrides that file; absent configuration defaults to mock. **Do not also run `turn` for a hook-covered turn**, or it may get a second event ID and debit twice. Without an active hook, use `python scripts/headroom.py turn --event-id <opaque-turn-id> --origin manual-user --mode normal --backend laya` from this skill directory, piping the UTF-8 user message on stdin. Never derive the event ID from message content.
+## Which agents are supported
 
-Use `python scripts/headroom.py status` for a read-only balance. The browser dashboard is `python scripts/headroom_dashboard.py`, at `http://127.0.0.1:8766/`; its Refresh button and 10-second refresh never charge. The default shared ledger is `$CODEX_HOME/headroom/ledger.sqlite3` (or `~/.codex/headroom/ledger.sqlite3`). Set `HEADROOM_STATE_PATH` to override it. The ledger stores only opaque event IDs, local dates, scores, and provider names - not prompt bodies.
+Each agent gets an adapter that reads its own local history and answers one question: how many direct human prompts did this agent record per day? Nothing about an agent leaks into the ledger, the scorer, or the display.
 
-For the Windows desktop display, install `requirements-desktop.txt` into the hook's Python environment and run `pythonw scripts/headroom_desktop.py`. The default is a small H icon in the taskbar notification area (possibly under the hidden-icons arrow): hover for percent left, click to toggle the usage card, and right-click to quit. Python/Tk, pystray, Pillow, pywebview, and Microsoft Edge WebView2 Runtime are required for the animated tray card. Clicking its meme plays bundled clips with the dashboard's audio-reactive animation; mute is remembered, and collapsing the card or switching language stops playback. Playing, refreshing, and opening the card never call a scorer. It uses a read-only loopback server on a random free port, independent of dashboard port 8766, which closes when the display exits. No browser tab is opened. `--renderer tk` selects the original static tray card without WebView2 or a server. `--mode orb` selects the previous draggable orb; `HEADROOM_DESKTOP_MODE` sets the startup default. The orb works without tray dependencies, with text-face fallbacks for unsupported images. All displays read the same ledger and refresh every ten seconds. A per-ledger Windows mutex prevents duplicate displays across sessions. Only position, language, and mute preference are saved in `desktop.json` beside the ledger. `--lang en` / `--lang zh` overrides `HEADROOM_LANG`, saved language, and the Chinese default; the card's EN/ZH button switches live. Exit the existing display before changing startup options.
+| Agent | History source | Hook |
+| --- | --- | --- |
+| `codex` | `$CODEX_HOME/thread_history_1.sqlite` → `thread_items` | yes |
+| `claude` | `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl` (falls back to `history.jsonl`) | — |
+| `opencode` | `$XDG_DATA_HOME/opencode/opencode.db` → `message` | — |
+| `antigravity` | `$GEMINI_DIR/antigravity/brain/*/.system_generated/logs/transcript_full.jsonl` | — |
+| `workbuddy` | `$WORKBUDDY_HOME/projects/*/*.jsonl` | — |
 
-The daily cap is the highest count of all `userMessage` items in any of the previous seven complete Asia/Shanghai days, multiplied by two. Today's scores are 0-10 points per turn, displayed as percent left. Zero history yields a provisional two-point cap. The balance resets by calendar day; zero never blocks conversation.
+`python scripts/headroom.py agents` lists every adapter, whether it is readable on this machine, and its recent per-day counts. Discovery is automatic: `--agents auto` (the default) reads every adapter that has local history.
 
-Only direct human turns in normal interactive mode should charge. Skip plan/Goal mode, scheduled/background work, subagents, continuations, unknown provenance, and scorer errors. The hook rejects known non-interactive sources and plan mode, but Codex's current `UserPromptSubmit` payload does not independently certify human origin; this is a best-effort amusement, not an audit-grade exclusion. A duplicate session-plus-turn ID charges once.
+A JSONL transcript is not a turn log. Claude Code replays tool results as user-role messages, so the Claude adapter requires a plain string body or a `text` block and drops `system`/`sdk` prompt sources and sidechain records. Codex and opencode are read straight from SQL. This is why the counts are not raw record counts.
 
-On Windows, install the user hook with `powershell -ExecutionPolicy Bypass -File hooks/install_windows.ps1` from this skill directory. Existing `hooks.json` is never overwritten without `-Force`; merge manually if it already exists. Review and trust the two definitions in Codex `/hooks`, then start a new session. Plugin installation or implicit skill selection alone does not activate lifecycle hooks. `SessionStart` defaults to the tray display on Windows, and the loopback dashboard elsewhere. `HEADROOM_DISPLAY=web|desktop|both|off` selects the display; `off` does not disable charging. Quitting the display leaves charging enabled; it can be manually started or reopened by the next session. No Windows-login startup is installed. `UserPromptSubmit` scores asynchronously and never blocks a response. Use temporary ledgers for tests and set `HEADROOM_DISABLE_DASHBOARD=1` to suppress all lifecycle displays.
+## One shared ledger
+
+The daily cap pools every readable agent: take the busiest of the previous seven complete Asia/Shanghai days, sum that day across all agents, and multiply by two. The balance resets by calendar day; zero never blocks conversation.
+
+The ledger defaults to `~/.headroom/ledger.sqlite3`, or the pre-existing `$CODEX_HOME/headroom/ledger.sqlite3` when that already exists. `HEADROOM_STATE_PATH` overrides it. The `debits` table carries an `agent` column; opening a ledger written by headroom 0.x migrates it in place and attributes existing rows to `codex`. The ledger stores only opaque event IDs, local dates, scores, provider names, and agent names — never prompt bodies.
+
+## What the number means
+
+Two independent halves:
+
+- **The cap (the scale)** comes from history: the busiest of the previous seven complete Asia/Shanghai days, summed across every readable agent, doubled. Today is excluded from the cap window.
+- **The spend (the numerator)** is today only, and resets at local midnight.
+
+`HEADROOM_SPENT_SOURCE` picks how the spend is derived:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Count today's messages until a hook scores something, then switch to the ledger |
+| `ledger` | Scored debits only. Without hooks, spend stays 0 and the meter reads 100% |
+| `counts` | Always `today_messages x 2`, ignoring the ledger |
+
+`COUNT_POINTS` is 2, matching the cap's x2, so a day as busy as your busiest recorded day reads 0% left. Counting and scoring never mix within one day, which is what stops a turn being charged twice.
+
+## Reading the balance
+
+- `python scripts/headroom.py status` — read-only balance. Never charges.
+- `python scripts/headroom.py agents` — discovery report with per-agent counts.
+- `python scripts/headroom_dashboard.py` — browser dashboard at `http://127.0.0.1:8766/`. It refreshes every 10 seconds, shows a per-agent source breakdown, and its Refresh button and 10-second timer never charge.
+- Windows desktop display: install `requirements-desktop.txt` into the hook's Python environment and run `pythonw scripts/headroom_desktop.py`. Default is a small H icon in the taskbar notification area. All displays read the same ledger.
+
+Because the display re-reads local history on every refresh, **no hook is required to see the cap, the per-agent breakdown, or the spend**.
+
+## Charging turns
+
+The installed `UserPromptSubmit` hook owns automatic charging. It normalizes each agent's payload — `prompt`/`user_prompt`, `session_id`/`sessionId`, `turn_id`/`promptId`, `permission_mode`/`permissionMode` — and sets `HEADROOM_AGENT` explicitly so the ledger attributes the debit correctly. Codex supplies a `turn_id`; Claude Code and Gemini do not, so headroom allocates a durable per-session sequence from the ledger's `hook_turns` table. Two different prompts in one session charge twice; a redelivered hook for the same turn charges once. A `turn_id` that is present but blank is treated as malformed and skipped.
+
+`HEADROOM_BACKEND` overrides `$CODEX_HOME/headroom/config.json`, which the hook rereads on every turn; `{"backend":"laya"}` selects the separately running loopback Laya service. **Do not also run `turn` for a hook-covered turn**, or it may get a second event ID and debit twice. Without an active hook, use `python scripts/headroom.py turn --event-id <opaque-turn-id> --origin manual-user --mode normal --backend mock` from this skill directory, piping the UTF-8 user message on stdin. Never derive the event ID from message content.
+
+Only direct human turns in normal interactive mode should charge. Skip plan mode, Goal/automation mode, scheduled work, subagents, continuations, unknown provenance, and scorer errors. The hook rejects known non-interactive sources, but current payloads do not independently certify human origin — this is best-effort amusement, not an audit-grade exclusion.
+
+## Adding an agent without touching code
+
+Declare it in `$HEADROOM_AGENTS_CONFIG` (default `~/.headroom/agents.json`):
+
+```json
+{"agents": [
+  {"name": "aider", "label": "Aider", "kind": "jsonl", "root": "~/.aider",
+   "glob": "**/*.history", "where": {"role": "user"},
+   "day_field": "timestamp", "day_format": "ms"}
+]}
+```
+
+`kind` is `jsonl` or `sqlite`; `day_format` is `ms`, `iso`, or `epoch`. A declared agent overrides a built-in of the same name.
+
+## Overriding a root
+
+`--agent-home NAME=PATH` (repeatable) overrides one adapter's root. `--codex-home PATH` is kept for compatibility and is equivalent to `--agent-home codex=PATH`. `--agents name,name` restricts the selection; naming an unreadable agent reports it instead of silently dropping it.
+
+## Privacy
+
+Local scoring, local ledger, no headroom cloud account. History queries select only item type and timestamp metadata — never prompt bodies. Adapters open agent databases read-only. The tray/desktop display reads local metadata and the ledger; the dashboard binds to `127.0.0.1`. A file untouched since before the seven-day window is skipped without being read, which is what keeps a 159 MB history directory from being rescanned on every refresh.
+
+Run the regression tests:
+
+```text
+python -m unittest discover -s skills/headroom/tests -p "test_*.py" -v
+node skills/headroom/tests/test_dashboard_mood.js
+```
+
+## Installing the hooks
+
+On Windows, install the user hook with `powershell -ExecutionPolicy Bypass -File hooks/install_windows.ps1` from this skill directory. Existing `hooks.json` is never overwritten without `-Force`; merge manually if it already exists.
+
+The installer wires up **Codex** only. The other agents are read-only: they contribute to the cap and the per-agent breakdown, but their turns are not charged. Their hooks can be added by hand — the hook normalizes each agent's payload and reads `HEADROOM_AGENT` when it is set, so a hook definition that exports that variable works without further changes.
+
+Review and trust the two definitions in Codex `/hooks`, then start a new session. Plugin installation or implicit skill selection alone does not activate lifecycle hooks. `SessionStart` defaults to the tray display on Windows, and the loopback dashboard elsewhere. `HEADROOM_DISPLAY=web|desktop|both|off` selects the display; `off` does not disable charging. Quitting the display leaves charging enabled; it can be manually started or reopened by the next session. No Windows-login startup is installed. `UserPromptSubmit` scores asynchronously and never blocks a response. Use temporary ledgers for tests and set `HEADROOM_DISABLE_DASHBOARD=1` to suppress all lifecycle displays.
