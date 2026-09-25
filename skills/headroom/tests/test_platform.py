@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -124,6 +125,70 @@ class InstallerTests(unittest.TestCase):
                                                "Stop": [{"hooks": [FOREIGN]}]}, "custom": 1})
         self.assertTrue((self.codex / "headroom").is_dir())  # Data is never deleted.
 
+    def test_install_and_uninstall_preserve_commands_in_a_shared_hook_group(self):
+        self.codex.mkdir(parents=True)
+        stale = {"type": "command", "command": "python3 /old/hooks/headroom_hook.py --user-prompt"}
+        shared = {"matcher": "*", "hooks": [FOREIGN, stale], "custom": "keep"}
+        original = {"hooks": {"UserPromptSubmit": [shared]}}
+        self.target.write_text(json.dumps(original), encoding="utf-8")
+        code, output = self.run_installer()
+        self.assertEqual(code, 0, output)
+        installed = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(installed["hooks"]["UserPromptSubmit"][0],
+                         {"matcher": "*", "hooks": [FOREIGN], "custom": "keep"})
+        self.assertEqual(len(installed["hooks"]["UserPromptSubmit"]), 2)
+        self.assertEqual(self.run_installer("--uninstall")[0], 0)
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")),
+                         {"hooks": {"UserPromptSubmit": [
+                             {"matcher": "*", "hooks": [FOREIGN], "custom": "keep"}]}})
+
+    def test_install_and_uninstall_keep_other_commands_that_mention_headroom(self):
+        self.codex.mkdir(parents=True)
+        lookalikes = [
+            {"type": "command", "command": "echo /other/hooks/headroom_hook.py --user-prompt"},
+            {"type": "command", "command": "python3 /other/hooks/headroom_hook.py --other"},
+            {"type": "command", "command": "python3 /other/hooks/headroom_hook.py.bak --user-prompt"},
+        ]
+        stale = {"type": "command", "command": "python3 /old/hooks/headroom_hook.py --user-prompt"}
+        original = {"hooks": {"UserPromptSubmit": [{"hooks": [*lookalikes, stale]}],
+                              "Stop": [{"hooks": [stale]}]}}
+        self.target.write_text(json.dumps(original), encoding="utf-8")
+        self.assertEqual(self.run_installer()[0], 0)
+        installed = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(installed["hooks"]["UserPromptSubmit"][0]["hooks"], lookalikes)
+        self.assertEqual(installed["hooks"]["Stop"], original["hooks"]["Stop"])
+        self.assertEqual(self.run_installer("--uninstall")[0], 0)
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")),
+                         {"hooks": {"UserPromptSubmit": [{"hooks": lookalikes}],
+                                    "Stop": [{"hooks": [stale]}]}})
+
+    def test_replaces_stale_windows_command_without_removing_foreign_command(self):
+        self.codex.mkdir(parents=True)
+        stale = {"type": "command", "command": "echo placeholder",
+                 "commandWindows": ('& "C:/Python Folder/python.exe" '
+                                    '"C:/old/hooks/headroom_hook.py" --user-prompt')}
+        foreign = {"type": "command", "command": "echo keep-me",
+                   "commandWindows": "Write-Output headroom_hook.py"}
+        self.target.write_text(json.dumps({"hooks": {"UserPromptSubmit": [
+            {"hooks": [foreign, stale]}]}}), encoding="utf-8")
+        self.assertEqual(self.run_installer()[0], 0)
+        installed = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(installed["hooks"]["UserPromptSubmit"][0]["hooks"], [foreign])
+        self.assertEqual(self.run_installer("--uninstall")[0], 0)
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")),
+                         {"hooks": {"UserPromptSubmit": [{"hooks": [foreign]}]}})
+
+    def test_install_keeps_unrelated_empty_group_unchanged(self):
+        self.codex.mkdir(parents=True)
+        empty = {"matcher": "future", "hooks": [], "custom": "keep"}
+        original = {"hooks": {"Stop": [empty]}}
+        self.target.write_text(json.dumps(original), encoding="utf-8")
+        self.assertEqual(self.run_installer()[0], 0)
+        installed = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(installed["hooks"]["Stop"], [empty])
+        self.assertEqual(self.run_installer("--uninstall")[0], 0)
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")), original)
+
     def test_uninstall_removes_a_headroom_only_file_and_is_repeatable(self):
         self.assertEqual(self.run_installer()[0], 0)
         (self.codex / "headroom" / "ledger.sqlite3").write_bytes(b"keep")
@@ -178,6 +243,117 @@ class InstallerTests(unittest.TestCase):
         start = data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         self.assertTrue(start.startswith("HEADROOM_DISPLAY=desktop "))
         self.assertEqual(shlex.split(start)[1], sys.executable)
+
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("sh"), "POSIX shell wrapper")
+    def test_install_sh_uses_python_path_with_spaces_and_rejects_bad_override(self):
+        chosen = self.home / "Python with spaces"
+        chosen.parent.mkdir(parents=True)
+        chosen.symlink_to(sys.executable)
+        env = {**os.environ, "HOME": str(self.home), "CODEX_HOME": str(self.codex),
+               "PYTHON": str(chosen)}
+        script = str(SKILL / "hooks" / "install.sh")
+        result = subprocess.run(["sh", script], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.target.read_text(encoding="utf-8"))
+        for event in ("SessionStart", "UserPromptSubmit"):
+            command = data["hooks"][event][0]["hooks"][0]["command"]
+            self.assertEqual(Path(shlex.split(command)[0]).resolve(), chosen.resolve())
+        self.assertEqual(self.run_installer("--uninstall")[0], 0)
+        self.assertFalse(self.target.exists())
+        result = subprocess.run(["sh", script], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = self.target.read_bytes()
+        env["PYTHON"] = str(self.home / "missing Python")
+        bad = subprocess.run(["sh", script], capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("PYTHON must point", bad.stderr)
+        self.assertEqual(self.target.read_bytes(), before)
+
+
+@unittest.skipIf(sys.platform == "win32" or not shutil.which("sh"),
+                 "installed POSIX hook commands run through /bin/sh")
+class InstalledHooksEndToEndTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="headroom e2e ")
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name)
+        self.codex = self.home / ".codex"
+        self.codex.mkdir()
+        self.ledger = self.codex / "headroom" / "ledger.sqlite3"
+        self.debug = self.codex / "headroom" / "last-hook.json"
+        yesterday = datetime.now(desktop.headroom.SHANGHAI).date() - timedelta(days=1)
+        with contextlib.closing(sqlite3.connect(self.codex / "thread_history_1.sqlite")) as conn:
+            conn.execute("CREATE TABLE thread_items (item_type TEXT, created_at_ms INTEGER)")
+            conn.execute("INSERT INTO thread_items VALUES (?, ?)",
+                         ("userMessage", desktop.headroom.day_start_ms(yesterday)))
+            conn.commit()
+        self.env = {**os.environ, "HOME": str(self.home), "CODEX_HOME": str(self.codex),
+                    "PYTHON": sys.executable, "HEADROOM_DISABLE_DASHBOARD": "1",
+                    "HEADROOM_BACKEND": "mock", "HEADROOM_STATE_PATH": str(self.ledger),
+                    "HEADROOM_DEBUG_PATH": str(self.debug)}
+        self.env.pop("HEADROOM_PLUGIN_ROOT", None)
+        self.env.pop("HEADROOM_HOOK_STRICT", None)
+
+    def install(self, *args):
+        return subprocess.run(["sh", str(SKILL / "hooks" / "install.sh"), *args],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+
+    def run_hook(self, config, event, payload):
+        command = config["hooks"][event][0]["hooks"][0]["command"]
+        result = subprocess.run(["/bin/sh", "-c", command],
+                                input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                capture_output=True, env=self.env, timeout=35)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        return json.loads(self.debug.read_text(encoding="utf-8"))
+
+    def debit_count(self):
+        with contextlib.closing(sqlite3.connect(self.ledger)) as conn:
+            return conn.execute("SELECT COUNT(*) FROM debits").fetchone()[0]
+
+    def test_installed_commands_charge_once_skip_background_and_uninstall_cleanly(self):
+        installed = self.install("--display", "off", "--link-skill")
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        config_path = self.codex / "hooks.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        skill_link = self.home / ".agents" / "skills" / "headroom"
+        self.assertEqual(skill_link.resolve(), SKILL.resolve())
+        before = config_path.read_bytes()
+        self.assertEqual(self.install("--display", "off", "--link-skill").returncode, 0)
+        self.assertEqual(config_path.read_bytes(), before)
+
+        session = {"session_id": "e2e-session", "cwd": str(self.home),
+                   "hook_event_name": "SessionStart", "source": "startup"}
+        self.assertEqual(self.run_hook(config, "SessionStart", session)["outcome"],
+                         "display_ready_or_starting")
+        self.assertFalse(self.ledger.exists())
+
+        prompt = "端到端测试：你好？🧪"
+        event = {"session_id": "e2e-session", "turn_id": "turn-1", "cwd": str(self.home),
+                 "hook_event_name": "UserPromptSubmit", "permission_mode": "default",
+                 "prompt": prompt}
+        self.assertEqual(self.run_hook(config, "UserPromptSubmit", event)["outcome"], "charged")
+        self.assertEqual(self.debit_count(), 1)
+        self.assertEqual(self.run_hook(config, "UserPromptSubmit", event)["outcome"], "duplicate")
+        self.assertEqual(self.debit_count(), 1)
+        self.assertEqual(self.run_hook(config, "UserPromptSubmit", {**event, "turn_id": "turn-2",
+                                                                      "permission_mode": "plan"})["outcome"],
+                         "ineligible")
+        self.assertEqual(self.run_hook(config, "UserPromptSubmit", {**event, "turn_id": "turn-3",
+                                                                      "source": "scheduled"})["outcome"],
+                         "ineligible")
+        self.assertEqual(self.debit_count(), 1)
+        status = subprocess.run([sys.executable, str(SKILL / "scripts" / "headroom.py"), "status"],
+                                capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertGreater(json.loads(status.stdout)["spent_points"], 0)
+        self.assertNotIn(prompt.encode("utf-8"), self.ledger.read_bytes())
+        self.assertNotIn(prompt, self.debug.read_text(encoding="utf-8"))
+
+        removed = self.install("--uninstall")
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(config_path.exists())
+        self.assertFalse(skill_link.exists())
+        self.assertEqual(self.debit_count(), 1)
 
 
 class HookLaunchTests(unittest.TestCase):

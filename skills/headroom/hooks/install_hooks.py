@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -27,6 +28,9 @@ HOOK_SCRIPT = "headroom_hook.py"
 DESCRIPTION = "headroom: I need a reset."
 DISPLAYS = ("desktop", "web", "both", "off")
 MIN_PYTHON = (3, 10)
+HOOK_EVENTS = {"SessionStart": ("--session-start", "Starting headroom dashboard"),
+               "UserPromptSubmit": ("--user-prompt", "Charging headroom")}
+PYTHON_NAME = re.compile(r"pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$", re.IGNORECASE)
 
 
 def skill_root() -> Path:
@@ -96,13 +100,33 @@ def build_hooks(root: Path, python: str, display: str | None = None,
     return hooks
 
 
-def is_headroom_block(block: object) -> bool:
-    if not isinstance(block, dict) or not isinstance(block.get("hooks"), list):
+def is_headroom_hook(hook: object, event: str) -> bool:
+    """Recognize installed commands without matching incidental mentions."""
+    if not isinstance(hook, dict) or hook.get("type") != "command" or event not in HOOK_EVENTS:
         return False
-    return any(isinstance(hook, dict) and any(
-        isinstance(hook.get(key), str) and HOOK_SCRIPT in hook[key]
-        for key in ("command", "commandWindows", "command_windows"))
-        for hook in block["hooks"])
+    flag, status = HOOK_EVENTS[event]
+    for key in ("command", "commandWindows", "command_windows"):
+        command = hook.get(key)
+        if not isinstance(command, str):
+            continue
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            continue
+        if parts and parts[0].startswith("HEADROOM_DISPLAY="):
+            parts = parts[1:]
+        if parts and parts[0] == "&":  # PowerShell's call operator.
+            parts = parts[1:]
+        if len(parts) != 3:
+            continue
+        python, script, argument = parts
+        script = script.replace("\\", "/")
+        python_name = python.replace("\\", "/").rsplit("/", 1)[-1]
+        if (argument == flag and script.endswith("/hooks/" + HOOK_SCRIPT)
+                and (PYTHON_NAME.fullmatch(python_name)
+                     or hook.get("statusMessage") == status)):
+            return True
+    return False
 
 
 def load_config(target: Path) -> dict:
@@ -121,8 +145,18 @@ def without_headroom(data: dict) -> tuple[dict, int]:
         if not isinstance(blocks, list):
             hooks[event] = blocks
             continue
-        kept = [block for block in blocks if not is_headroom_block(block)]
-        removed += len(blocks) - len(kept)
+        kept = []
+        for block in blocks:
+            if not isinstance(block, dict) or not isinstance(block.get("hooks"), list):
+                kept.append(block)
+                continue
+            commands = [hook for hook in block["hooks"] if not is_headroom_hook(hook, event)]
+            removed_here = len(block["hooks"]) - len(commands)
+            removed += removed_here
+            if not removed_here:
+                kept.append(block)
+            elif commands:
+                kept.append({**block, "hooks": commands})
         if kept:
             hooks[event] = kept
     result["hooks"] = hooks
@@ -235,7 +269,7 @@ def uninstall(args) -> int:
     if not removed:
         messages.append(f"No headroom hooks found in {target}")
     elif args.dry_run:
-        messages.append(f"[dry run] Would remove {removed} headroom hook block(s) from {target}")
+        messages.append(f"[dry run] Would remove {removed} headroom hook(s) from {target}")
     else:
         messages.append(f"Backed up {target} to {backup(target)}")
         if not updated["hooks"] and set(updated) <= {"hooks", "description"} \
@@ -244,7 +278,7 @@ def uninstall(args) -> int:
             messages.append(f"Removed {target} (it only contained headroom hooks)")
         else:
             write_json(target, updated)
-            messages.append(f"Removed {removed} headroom hook block(s) from {target}")
+            messages.append(f"Removed {removed} headroom hook(s) from {target}")
     unlinked = unlink_skill(skill_root(), args.dry_run)
     if unlinked:
         messages.append(unlinked)
