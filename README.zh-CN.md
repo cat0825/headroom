@@ -62,6 +62,26 @@ powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.p
 
 要把 `$headroom` 作为 Codex Skill 使用，可以通过本地插件市场安装这个仓库，或把 `skills/headroom` 复制到 Codex 的 skills 目录。仅安装插件 / Skill 不会自动启用或信任生命周期钩子。请保留钩子指向的源目录。
 
+### macOS / Linux（手动配置）
+
+目前还没有 macOS / Linux 安装脚本，托盘显示也只支持 Windows。只读的余额查询和网页面板只用 Python 标准库，可以直接用 `python3` 运行：
+
+```bash
+python3 skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom_dashboard.py --lang zh
+```
+
+`headroom.py` 默认读取 `~/.codex` 中的 Codex 历史；如果设置了自定义的 `CODEX_HOME`，请同时传入 `--codex-home "$CODEX_HOME"`。
+
+钩子模板中的 `command` 条目本来就调用 `python3`。要开启自动扣点，可以手动完成 Windows 安装器做的事：把 `__PLUGIN_ROOT__` 替换为 `skills/headroom` 的绝对路径，保存为 Codex 目录下的 `hooks.json`。在仓库根目录执行下面的命令，只在文件不存在时写入（已存在时请自行合并两条定义）：
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}"
+test -e "${CODEX_HOME:-$HOME/.codex}/hooks.json" || sed "s#__PLUGIN_ROOT__#$PWD/skills/headroom#g" skills/headroom/hooks/hooks.json.template > "${CODEX_HOME:-$HOME/.codex}/hooks.json"
+```
+
+然后同样在 Codex `/hooks` 中审查并信任这两条定义。在这些平台上，`SessionStart` 会启动网页面板。
+
 <a id="desktop-orb"></a>
 
 ## 任务栏托盘（Windows）
@@ -165,7 +185,7 @@ JavaScript 测试需要 Node.js 和 Python，可用 `HEADROOM_TEST_PYTHON` 指�
 
 </details>
 
-## Contributors
+## 贡献者
 
 - [TOGET-H](https://github.com/TOGET-H)
 - [cat0825](https://github.com/cat0825)
