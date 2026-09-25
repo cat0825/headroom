@@ -233,6 +233,8 @@ node skills/headroom/tests/test_dashboard_mood.js
 
 JavaScript 测试需要 Node.js 和 Python，可用 `HEADROOM_TEST_PYTHON` 指定 Python 路径。使用临时账本的生命周期冒烟测试必须设置 `HEADROOM_DISABLE_DASHBOARD=1`。HTTP 测试使用临时回环端口，不占用实际面板端口。
 
+GitHub Actions 会在每次推送和 PR 时运行这些检查，也支持手动触发。测试矩阵覆盖 Linux、Windows、macOS，使用 Python 3.10–3.13 和 Node.js 22。Windows 还会在 Python 3.13 上安装桌面依赖并重跑 Python 测试。原生托盘和 WebView2 冒烟测试仍需在本机显式启用。
+
 </details>
 
 ## 贡献者
