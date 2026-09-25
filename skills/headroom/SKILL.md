@@ -42,11 +42,13 @@ Two independent halves:
 
 | Value | Behaviour |
 | --- | --- |
-| `auto` (default) | Count today's messages until a hook scores something, then switch to the ledger |
+| `auto` (default) | **Per agent**: scored debits where a hook charged today, that agent's message count everywhere else |
 | `ledger` | Scored debits only. Without hooks, spend stays 0 and the meter reads 100% |
 | `counts` | Always `today_messages x 2`, ignoring the ledger |
 
-`COUNT_POINTS` is 2, matching the cap's x2, so a day as busy as your busiest recorded day reads 0% left. Counting and scoring never mix within one day, which is what stops a turn being charged twice.
+`COUNT_POINTS` is 2, matching the cap's x2, so a day as busy as your busiest recorded day reads 0% left.
+
+`auto` resolves **per agent, not per day**. A single switch for the whole day means one Codex charge erases every other agent's day — with a hook on only one agent, 84 counted messages would collapse to that agent's score. Per agent, counting and scoring never mix, which is what stops a turn being charged twice; `spent_origin` reports `counts`, `ledger`, or `mixed`, and `spent_scored_agents` / `spent_counted_agents` say which is which.
 
 ## Reading the balance
 

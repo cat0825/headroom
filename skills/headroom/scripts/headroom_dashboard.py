@@ -37,11 +37,13 @@ TEXT = {
     "zh": {
         "locale": "zh-CN", "heading": "脑力剩余", "loading": "读取中...",
         "refresh": "刷新", "spent": "已用", "points": "点", "updated": "最近刷新：",
+        "left": "剩余", "of_cap": "上限",
         "unavailable": "不可用", "read_failed": "读取失败，请稍后刷新",
         "invalid_data": "脑力数据不可用",
         "status_error": "无法读取本机 AI 历史或 headroom 账本",
         "sources": "来源",
         "from_counts": "（按对话条数估算）",
+        "no_agents": "未发现可读取的 agent 历史",
         "mood_full": "脑力充足：戴耳机的狗狗", "mood_low": "脑力低于30%：咆哮的狗狗",
         "mood_declining": "脑力下降中：流泪的猫猫",
         "play_next": "点击播放下一段大狗叫（有声音）；Esc 停止",
@@ -51,11 +53,13 @@ TEXT = {
     "en": {
         "locale": "en-US", "heading": "Headroom", "loading": "Loading...",
         "refresh": "Refresh", "spent": "Used", "points": "points", "updated": "Updated: ",
+        "left": "left", "of_cap": "of",
         "unavailable": "Unavailable", "read_failed": "Unable to load. Please refresh.",
         "invalid_data": "Headroom data is unavailable",
         "status_error": "Unable to read local AI history or the headroom ledger",
         "sources": "Sources",
         "from_counts": " (estimated from message count)",
+        "no_agents": "No readable agent history found",
         "mood_full": "Plenty of headroom: dog wearing headphones",
         "mood_low": "Below 30%: barking dog",
         "mood_declining": "Headroom running low: crying cat",
@@ -271,7 +275,7 @@ async function refresh(){
   document.getElementById('fill').style.width=Math.max(0,Math.min(100,percent))+'%';
   updateMood(percent);
   meta.textContent=TEXT.spent+' '+data.spent_points.toFixed(2)+' / '+data.cap_points+' '+TEXT.points
-   +(data.spent_origin==='counts'?TEXT.from_counts:'');
+   +(data.spent_origin==='ledger'?'':TEXT.from_counts);
   document.getElementById('updated').textContent=TEXT.updated+new Date().toLocaleTimeString(TEXT.locale);
   meta.classList.remove('error');
   updateSources(data);

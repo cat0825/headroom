@@ -336,25 +336,56 @@ def spent_source() -> str:
 
 
 def resolve_spent(base: dict, as_of: date, state_path: Path) -> dict:
-    """Today's spend, and where it came from.
+    """Today's spend, and where each part of it came from.
 
-    Scored debits need a hook on every agent, which most setups do not have. So
-    ``auto`` counts the day's own messages until a hook scores something, then
-    hands over to the ledger. Counting and scoring never mix for the same day,
-    which is what keeps the number from being double-charged.
+    Scored debits need a hook on every agent, and most setups only have one. So
+    ``auto`` decides **per agent**: an agent with scored debits today contributes
+    those, and every other agent contributes its own message count. The
+    alternative — one switch for the whole day — makes a single Codex charge
+    erase every other agent's day, which is both surprising and wrong.
+
+    Per agent, counting and scoring never mix, which is what stops a turn being
+    charged twice.
     """
     source = spent_source()
     counted = int(base.get("today_messages", 0))
+    per_agent_today = base.get("per_agent_today") or {}
     conn = open_state(state_path, create=False)
     try:
         ledger = spent_points(conn, as_of)
+        scored = spent_by_agent(conn, as_of)
     finally:
         if conn is not None:
             conn.close()
-    if source != "ledger" and (source == "counts" or ledger <= 0):
+    if source == "counts":
         return {"points": round(counted * COUNT_POINTS, 2), "origin": "counts",
-                "messages": counted}
-    return {"points": ledger, "origin": "ledger", "messages": None}
+                "messages": counted, "scored_agents": [], "counted_agents": sorted(per_agent_today)}
+    if source == "ledger":
+        return {"points": ledger, "origin": "ledger", "messages": None,
+                "scored_agents": sorted(scored), "counted_agents": []}
+    total = 0.0
+    scored_agents: list[str] = []
+    counted_agents: list[str] = []
+    for name in set(per_agent_today) | set(scored):
+        if scored.get(name, 0) > 0:
+            total += scored[name]
+            scored_agents.append(name)
+        else:
+            messages = int(per_agent_today.get(name, 0))
+            total += messages * COUNT_POINTS
+            if messages:
+                counted_agents.append(name)
+    if not scored_agents and not counted_agents:
+        # No adapter reported anything; trust the ledger alone.
+        total = ledger
+    if scored_agents and counted_agents:
+        origin = "mixed"
+    else:
+        origin = "ledger" if scored_agents else "counts"
+    return {"points": round(total, 2), "origin": origin,
+            "messages": counted if counted_agents else None,
+            "scored_agents": sorted(scored_agents),
+            "counted_agents": sorted(counted_agents)}
 
 
 def view(base: dict, as_of: date, spent: float, *, origin: str | None = None) -> dict:
@@ -382,6 +413,10 @@ def status(base: dict, as_of: date, state_path: Path) -> dict:
         result["per_agent_counts"] = base.get("per_agent_counts", {})
         result["per_agent_today"] = base.get("per_agent_today", {})
         result["today_messages"] = base.get("today_messages", 0)
+        # Which agents were scored and which were counted, so a display can say
+        # so instead of implying every number came from the same place.
+        result["spent_scored_agents"] = resolved["scored_agents"]
+        result["spent_counted_agents"] = resolved["counted_agents"]
         if base.get("agents"):
             result["agents"] = base["agents"]
         return result
