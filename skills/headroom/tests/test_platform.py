@@ -210,6 +210,39 @@ class HookLaunchTests(unittest.TestCase):
             spawn.assert_not_called()
 
 
+class TclLibraryTests(unittest.TestCase):
+    """A detached venv process loses Tcl's search path; headroom sets it."""
+
+    def test_missing_variables_are_derived_from_a_prefix(self):
+        import headroom_desktop as desktop
+        with tempfile.TemporaryDirectory() as temp:
+            prefix = Path(temp)
+            for name in ("tcl9.0", "tk9.0"):
+                (prefix / "lib" / name).mkdir(parents=True)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("TCL_LIBRARY", "TK_LIBRARY")}
+            with patch.dict(os.environ, env, clear=True),                     patch.object(desktop.sys, "base_prefix", str(prefix)),                     patch.object(desktop.sys, "prefix", str(prefix)),                     patch.object(desktop.sys, "platform", "darwin"):
+                desktop.ensure_tcl_library()
+                self.assertEqual(os.environ["TCL_LIBRARY"], str(prefix / "lib" / "tcl9.0"))
+                self.assertEqual(os.environ["TK_LIBRARY"], str(prefix / "lib" / "tk9.0"))
+
+    def test_existing_variables_are_left_alone(self):
+        import headroom_desktop as desktop
+        env = {"TCL_LIBRARY": "/mine/tcl", "TK_LIBRARY": "/mine/tk"}
+        with patch.dict(os.environ, env, clear=False):
+            desktop.ensure_tcl_library()
+            self.assertEqual(os.environ["TCL_LIBRARY"], "/mine/tcl")
+            self.assertEqual(os.environ["TK_LIBRARY"], "/mine/tk")
+
+    def test_non_darwin_is_untouched(self):
+        import headroom_desktop as desktop
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("TCL_LIBRARY", "TK_LIBRARY")}
+        with patch.dict(os.environ, env, clear=True),                 patch.object(desktop.sys, "platform", "linux"):
+            desktop.ensure_tcl_library()
+            self.assertNotIn("TCL_LIBRARY", os.environ)
+
+
 class CliTests(unittest.TestCase):
     def test_status_cli_honors_codex_home_like_the_hook_and_dashboard(self):
         with tempfile.TemporaryDirectory() as temp:

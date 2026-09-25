@@ -23,6 +23,32 @@ try:
 except ImportError:  # e.g. Homebrew Python without python-tk
     tk = None
 
+
+def ensure_tcl_library() -> None:
+    """Point Tcl/Tk at their library directory before any Tk object exists.
+
+    A venv interpreter normally resolves ``tcl_library`` from its base prefix.
+    A process started detached (new session, no controlling terminal) can lose
+    that and die with "Cannot find a usable init.tcl" — which looks like a
+    missing Tk but is really a search-path problem. Setting the variables up
+    front makes every launch path behave the same.
+    """
+    if sys.platform != "darwin" or tk is None:
+        return
+    if os.environ.get("TCL_LIBRARY") and os.environ.get("TK_LIBRARY"):
+        return
+    for prefix in (Path(sys.base_prefix), Path(sys.prefix)):
+        lib = prefix / "lib"
+        tcl = sorted(lib.glob("tcl[89].*"))
+        tklib = sorted(lib.glob("tk[89].*"))
+        if tcl and tklib:
+            os.environ.setdefault("TCL_LIBRARY", str(tcl[-1]))
+            os.environ.setdefault("TK_LIBRARY", str(tklib[-1]))
+            return
+
+
+ensure_tcl_library()
+
 import headroom
 from headroom_dashboard import ASSET_DIR, TEXT as WEB_TEXT
 
