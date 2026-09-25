@@ -54,6 +54,8 @@ Discovery is automatic: headroom asks each adapter whether its local history exi
 | `antigravity` | `$GEMINI_DIR/antigravity/brain/*/.system_generated/logs/transcript_full.jsonl` | ✅ |
 | `workbuddy` | `$WORKBUDDY_HOME/projects/*.jsonl` | — |
 
+`antigravity` covers both Google tools that share `~/.gemini`. Only Gemini CLI is wired up: it has a prompt event, and Antigravity's own hook system does not (its `PreInvocation` fires before *every* model call, which would charge one prompt several times).
+
 ```text
 python3 skills/headroom/scripts/headroom.py agents
 ```
@@ -103,19 +105,27 @@ A small H icon appears in the Windows taskbar notification area, possibly under 
 
 ### Enable automatic debits
 
-Preview, then apply:
+Preview, then merge:
 
 ```bash
-python3 skills/headroom/hooks/install_hooks.py                # preview
-python3 skills/headroom/hooks/install_hooks.py --apply        # merge into detected agents
-python3 skills/headroom/hooks/install_hooks.py --apply --agents claude,gemini
+python3 skills/headroom/hooks/install_hooks.py --dry-run      # show every change
+python3 skills/headroom/hooks/install_hooks.py                # merge into every detected agent
+python3 skills/headroom/hooks/install_hooks.py --agents codex,claude
 ```
 
-It merges into `$CODEX_HOME/hooks.json`, `$CLAUDE_CONFIG_DIR/settings.json`, and `$GEMINI_DIR/settings.json`, preserves unrelated hook entries, backs up every modified file, and refuses to rewrite an unparseable config. On Windows, `powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1` remains available for Codex alone.
+| Agent | Config file | Events |
+| --- | --- | --- |
+| Codex | `$CODEX_HOME/hooks.json` | `SessionStart`, `UserPromptSubmit` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/settings.json` | `SessionStart`, `UserPromptSubmit` |
+| Gemini CLI | `$GEMINI_DIR/settings.json` | `SessionStart`, `BeforeAgent` |
 
-Review and trust headroom's **SessionStart** and **UserPromptSubmit** definitions in each agent (Codex `/hooks`, Claude Code `/hooks`, Gemini `/hooks`). After the initial hook setup, start a new session to verify activation. Subsequent messages in that session can charge normally; you do **not** need to keep making new sessions.
+The default `--agents auto` wires up Codex plus every other agent that already has a home directory here, so it never creates `~/.claude` or `~/.gemini` for a tool you do not use. `--agents all` takes every agent; a comma list takes exactly those. Every file is backed up before it is written, unrelated hook entries are preserved, an unparseable config is never rewritten, and re-running is idempotent. On Windows, `powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1` remains available for Codex alone.
 
-`SessionStart` launches the tray display on Windows (the web dashboard on other platforms). `UserPromptSubmit` scores after submission, asynchronously—not after the assistant finishes. Allow scoring to finish and the display to refresh.
+Each product stores the same two ideas in its own schema, and the installer writes each one's: Codex and Claude Code time hooks in seconds and Claude Code has no `async` flag, while Gemini CLI counts milliseconds and calls the prompt event `BeforeAgent`. All three call the same `headroom_hook.py`, so a turn is scored by the same local scorer whichever tool you typed into, and every debit lands in one shared ledger.
+
+Review and trust headroom's hooks in each agent (Codex `/hooks`, Claude Code `/hooks`, Gemini CLI `/hooks panel`). After the initial hook setup, start a new session to verify activation. Subsequent messages in that session can charge normally; you do **not** need to keep making new sessions.
+
+`SessionStart` launches the tray display on Windows (the web dashboard on other platforms). `UserPromptSubmit`/`BeforeAgent` scores after submission—not after the assistant finishes. Codex runs it asynchronously; Claude Code and Gemini CLI run hooks inline, so allow scoring to finish and the display to refresh.
 
 opencode and WorkBuddy have no JSON hook config, so they contribute to the cap and the per-agent breakdown but do not accrue `spent_points`. To expose `$headroom` as an agent skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into that agent's skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
 
@@ -128,14 +138,14 @@ python3 skills/headroom/scripts/headroom.py status
 python3 skills/headroom/scripts/headroom_dashboard.py --lang en
 ```
 
-To enable automatic debits, review and run the installer from the repository root. It merges headroom's two hooks into `${CODEX_HOME:-~/.codex}/hooks.json` without touching your other hooks, backs up a changed file, and is safe to re-run. The hooks call the Python that ran the installer (choose one with `PYTHON=/path/to/python3`), with no PowerShell:
+To enable automatic debits, review and run the installer from the repository root. It merges headroom's two hooks into every detected agent's config (`${CODEX_HOME:-~/.codex}/hooks.json`, `~/.claude/settings.json`, `~/.gemini/settings.json`) without touching your other hooks, backs up a changed file, and is safe to re-run. The hooks call the Python that ran the installer (choose one with `PYTHON=/path/to/python3`), with no PowerShell:
 
 ```bash
 sh skills/headroom/hooks/install.sh --dry-run   # preview
 sh skills/headroom/hooks/install.sh             # add --link-skill to expose $headroom via ~/.agents/skills
 ```
 
-Then review and trust the two definitions in Codex `/hooks` as above. `SessionStart` starts the web dashboard (open [the dashboard](http://127.0.0.1:8766/?lang=en)). `sh skills/headroom/hooks/install.sh --uninstall` removes only headroom's hooks and keeps your ledger.
+Then review and trust the definitions in each agent as above. `SessionStart` starts the web dashboard (open [the dashboard](http://127.0.0.1:8766/?lang=en)). `sh skills/headroom/hooks/install.sh --uninstall` removes only headroom's hooks and keeps your ledger.
 
 **macOS menu bar (optional).** Install `requirements-desktop.txt` into that Python, then run `python3 skills/headroom/scripts/headroom_desktop.py --lang en`. An H icon appears in the menu bar; click it and choose **Show usage** for the static card, or use `--mode orb` for the floating orb. The animated WebView2 card is Windows-only, so clips play in the web dashboard. Python must include Tk (Homebrew: `brew install python-tk`); if Tk or the tray packages are missing, headroom falls back to the web dashboard. To have `SessionStart` open the menu bar display, re-run the installer with `--display desktop`. Nothing is added to login items.
 
