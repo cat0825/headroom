@@ -483,6 +483,8 @@ def agents_report(as_of: date, adapters: list[AgentAdapter] | None = None) -> di
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    # CODEX_HOME is honoured by the codex adapter's default root, and
+    # default_state_path() falls back to the legacy Codex-era ledger.
     parser.add_argument("--codex-home", type=Path, default=None,
                         help="Codex home; overrides the codex adapter's default root")
     parser.add_argument("--agent-home", action="append", metavar="NAME=PATH",

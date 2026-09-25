@@ -117,6 +117,26 @@ Review and trust headroom's **SessionStart** and **UserPromptSubmit** definition
 
 opencode and WorkBuddy have no JSON hook config, so they contribute to the cap and the per-agent breakdown but do not accrue `spent_points`. To expose `$headroom` as an agent skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into that agent's skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
 
+### macOS / Linux
+
+You need Python 3.10+ (macOS's built-in `/usr/bin/python3` may be older; use python.org or `brew install python`). Status and the web dashboard use only the standard library:
+
+```bash
+python3 skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom_dashboard.py --lang en
+```
+
+To enable automatic debits, review and run the installer from the repository root. It merges headroom's two hooks into `${CODEX_HOME:-~/.codex}/hooks.json` without touching your other hooks, backs up a changed file, and is safe to re-run. The hooks call the Python that ran the installer (choose one with `PYTHON=/path/to/python3`), with no PowerShell:
+
+```bash
+sh skills/headroom/hooks/install.sh --dry-run   # preview
+sh skills/headroom/hooks/install.sh             # add --link-skill to expose $headroom via ~/.agents/skills
+```
+
+Then review and trust the two definitions in Codex `/hooks` as above. `SessionStart` starts the web dashboard (open [the dashboard](http://127.0.0.1:8766/?lang=en)). `sh skills/headroom/hooks/install.sh --uninstall` removes only headroom's hooks and keeps your ledger.
+
+**macOS menu bar (optional).** Install `requirements-desktop.txt` into that Python, then run `python3 skills/headroom/scripts/headroom_desktop.py --lang en`. An H icon appears in the menu bar; click it and choose **Show usage** for the static card, or use `--mode orb` for the floating orb. The animated WebView2 card is Windows-only, so clips play in the web dashboard. Python must include Tk (Homebrew: `brew install python-tk`); if Tk or the tray packages are missing, headroom falls back to the web dashboard. To have `SessionStart` open the menu bar display, re-run the installer with `--display desktop`. Nothing is added to login items.
+
 <a id="desktop-orb-windows"></a>
 
 ## Menu bar (macOS)

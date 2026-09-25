@@ -86,9 +86,10 @@ def python_background() -> str:
 def desktop_python() -> str:
     """The interpreter that has the display extras.
 
-    A dedicated venv is the supported way to give the tray/menu-bar process
-    PyObjC (macOS) or pystray (Windows) without touching the hook's own
-    interpreter.
+    A dedicated venv is the supported way to give the tray process pystray and,
+    on macOS, PyObjC, without touching the hook's own interpreter. pystray's
+    macOS backend runs on Tk's main-thread event loop, so the tray needs both
+    packages in the same interpreter.
     """
     configured = os.environ.get("HEADROOM_DESKTOP_PYTHON")
     if configured:
@@ -98,21 +99,6 @@ def desktop_python() -> str:
     if venv.is_file():
         return str(venv)
     return python_background()
-
-
-def display_script() -> str:
-    """macOS uses a native menu bar item; every other platform a tray window."""
-    return "headroom_menubar.py" if sys.platform == "darwin" else "headroom_desktop.py"
-
-
-def macos_app_bundle() -> Path | None:
-    """The installed ``.app``, when one exists.
-
-    macOS 26 will not reliably render a status item owned by a bare interpreter
-    process, so the bundle is the supported launch path.
-    """
-    candidate = Path.home() / "Applications" / "headroom.app"
-    return candidate if candidate.is_dir() else None
 
 
 def codex_home() -> Path:
@@ -225,6 +211,19 @@ def dashboard_is_up(port: int) -> bool:
         return False
 
 
+def spawn_detached(command: list[str], cwd: str | None) -> None:
+    """Start a display that outlives this short-lived hook process.
+
+    Windows hides the console window. On macOS/Linux a new session keeps the
+    display out of Codex's process group and terminal (no SIGHUP/SIGINT).
+    """
+    options = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+               if sys.platform == "win32" else {"start_new_session": True})
+    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, **options)
+
+
 def start_dashboard(cwd: str | None) -> None:
     # Lifecycle smoke tests must not leave a production-port server pointing
     # at a temporary ledger that disappears when the test finishes.
@@ -237,10 +236,7 @@ def start_dashboard(cwd: str | None) -> None:
     command = [python_background(), str(dashboard), "--port", str(port),
                "--codex-home", str(codex_home()),
                "--state-path", str(state_path(cwd))]
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=creationflags, close_fds=True)
+    spawn_detached(command, cwd)
 
 
 def start_display(cwd: str | None) -> None:
@@ -254,19 +250,14 @@ def start_display(cwd: str | None) -> None:
     if mode in {"web", "both"}:
         start_dashboard(cwd)
     if mode in {"desktop", "both"} and os.environ.get("HEADROOM_DISABLE_DESKTOP") != "1":
-        bundle = macos_app_bundle() if sys.platform == "darwin" else None
-        if bundle is not None:
-            # LaunchServices gives the status item a bundle identity to attach to.
-            command = ["open", str(bundle), "--args",
-                       "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
-        else:
-            command = [desktop_python(), str(scorer_path().with_name(display_script())),
-                       "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
-        # The desktop process owns a single-instance lock, so concurrent
-        # SessionStart events cannot leave multiple icons on screen.
-        subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
+        # desktop_python() prefers a dedicated venv, which is where pystray and
+        # PyObjC live; without one the display falls back to the web dashboard.
+        command = [desktop_python(), str(scorer_path().with_name("headroom_desktop.py")),
+                   "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
+        # The desktop process owns a per-ledger lock (a Windows named mutex, or
+        # flock elsewhere), so concurrent SessionStart events cannot leave
+        # multiple displays on the desktop.
+        spawn_detached(command, cwd)
 
 
 def is_chargeable(event: dict) -> bool:

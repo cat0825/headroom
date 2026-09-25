@@ -117,6 +117,26 @@ python3 skills/headroom/hooks/install_hooks.py --apply --agents claude,gemini
 
 opencode 和 WorkBuddy 没有 JSON 钩子配置，因此它们会参与额度基准和各 agent 明细，但不会累积 `spent_points`。要把 `$headroom` 作为 Skill 使用，可以通过本地插件市场安装这个仓库，或把 `skills/headroom` 复制到对应 agent 的 skills 目录。仅安装插件 / Skill 不会自动启用或信任生命周期钩子。请保留钩子指向的源目录。
 
+### macOS / Linux
+
+需要 Python 3.10+（macOS 自带的 `/usr/bin/python3` 可能过旧，请从 python.org 安装或 `brew install python`）。余额查询和网页面板只用标准库：
+
+```bash
+python3 skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom_dashboard.py --lang zh
+```
+
+要开启自动扣点，请在仓库根目录审阅并运行安装器。它会把 headroom 的两条钩子合并进 `${CODEX_HOME:-~/.codex}/hooks.json`，不改动你的其他钩子；文件有变更时先备份，可重复运行。钩子使用运行安装器的那个 Python（可用 `PYTHON=/path/to/python3` 指定），不依赖 PowerShell：
+
+```bash
+sh skills/headroom/hooks/install.sh --dry-run   # 预览
+sh skills/headroom/hooks/install.sh             # 加 --link-skill 可通过 ~/.agents/skills 提供 $headroom
+```
+
+然后同样在 Codex `/hooks` 中审查并信任这两条定义。`SessionStart` 会启动网页面板（打开[面板](http://127.0.0.1:8766/?lang=zh)）。`sh skills/headroom/hooks/install.sh --uninstall` 只移除 headroom 的钩子，保留账本。
+
+**macOS 菜单栏（可选）。** 在同一个 Python 中安装 `requirements-desktop.txt`，然后运行 `python3 skills/headroom/scripts/headroom_desktop.py --lang zh`。菜单栏会出现 H 图标，点击后选择 **展开用量** 查看静态卡片；也可以用 `--mode orb` 显示悬浮球。动画 WebView2 卡片仅支持 Windows，片段请在网页面板中播放。Python 需要带 Tk（Homebrew：`brew install python-tk`）；缺少 Tk 或托盘依赖时会自动改用网页面板。想让 `SessionStart` 打开菜单栏显示，请用 `--display desktop` 重新运行安装器。不会添加登录启动项。
+
 <a id="desktop-orb"></a>
 
 ## 菜单栏（macOS）
@@ -253,7 +273,7 @@ JavaScript 测试需要 Node.js 和 Python，可用 `HEADROOM_TEST_PYTHON` 指�
 
 </details>
 
-## Contributors
+## 贡献者
 
 - [TOGET-H](https://github.com/TOGET-H)
 - [cat0825](https://github.com/cat0825)

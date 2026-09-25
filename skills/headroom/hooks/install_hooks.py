@@ -1,16 +1,14 @@
-"""Install headroom's lifecycle hooks into every supported agent's config.
+#!/usr/bin/env python3
+"""Cross-platform, non-destructive installer for headroom's Codex hooks.
 
-Preview is the default; nothing is written without ``--apply``.
+Merges headroom's SessionStart and UserPromptSubmit hooks into
+``$CODEX_HOME/hooks.json`` (default ``~/.codex/hooks.json``) while keeping
+every other hook. Re-running is idempotent; changed files are backed up first.
+Use ``--uninstall`` to remove only headroom's entries. Runtime data (ledger,
+preferences) stays in ``$CODEX_HOME/headroom`` and is never deleted.
 
-```text
-python hooks/install_hooks.py                 # show what would change
-python hooks/install_hooks.py --apply         # merge into every detected agent
-python hooks/install_hooks.py --apply --agents claude,gemini
-```
-
-Existing hook entries are preserved. A headroom entry is identified by
-``headroom_hook.py`` appearing in its command, so re-running updates in place
-instead of stacking duplicates. Every modified file is backed up first.
+The installer itself runs on Python 3.8+, so it can explain an interpreter
+that is too old (e.g. macOS's /usr/bin/python3) instead of crashing.
 """
 
 from __future__ import annotations
@@ -18,189 +16,270 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
+import shlex
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "headroom_hook.py"
-MARKER = "headroom_hook.py"
-
-#: Inner hook shape per agent: which optional keys the schema accepts.
-SHAPES = {
-    "codex": {"matcher": True, "windows": True, "async": True, "status": True,
-              "description": True},
-    "claude": {"matcher": True, "windows": False, "async": False, "status": False,
-               "description": False},
-    "gemini": {"matcher": False, "windows": False, "async": False, "status": False,
-               "description": False},
-}
-
-#: Event -> (matcher, timeout seconds). None matcher means the key is omitted.
-EVENTS = {
-    "codex": {"SessionStart": ("startup|resume|clear|compact", 3),
-              "UserPromptSubmit": (None, 30)},
-    "claude": {"SessionStart": ("startup|resume|clear|compact", 3),
-               "UserPromptSubmit": (None, 30)},
-    "gemini": {"SessionStart": (None, 3), "BeforeAgent": (None, 30)},
-}
-#: Gemini's SessionStart has no matcher; this keeps the two lists aligned.
-START_EVENT = {"codex": "SessionStart", "claude": "SessionStart", "gemini": "SessionStart"}
-PROMPT_EVENT = {"codex": "UserPromptSubmit", "claude": "UserPromptSubmit",
-                "gemini": "BeforeAgent"}
-#: Event used for the flag passed to the hook script.
-START_FLAG = "--session-start"
-PROMPT_FLAG = "--user-prompt"
+HOOK_SCRIPT = "headroom_hook.py"
+DESCRIPTION = "headroom: I need a reset."
+DISPLAYS = ("desktop", "web", "both", "off")
+MIN_PYTHON = (3, 10)
 
 
-def config_path(agent: str) -> Path:
-    if agent == "codex":
-        return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "hooks.json"
-    if agent == "claude":
-        return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
-    if agent == "gemini":
-        return Path(os.environ.get("GEMINI_DIR") or Path.home() / ".gemini") / "settings.json"
-    raise ValueError(f"Unsupported agent: {agent}")
+def skill_root() -> Path:
+    configured = os.environ.get("HEADROOM_PLUGIN_ROOT")
+    return Path(configured).resolve() if configured else Path(__file__).resolve().parents[1]
 
 
-def python_command() -> str:
-    """A POSIX-safe absolute interpreter path, quoted."""
-    executable = shutil.which("python3") or shutil.which("python") or sys.executable
-    return f'"{executable}"'
+def default_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
 
 
-def hook_command(agent: str, flag: str) -> str:
-    # HEADROOM_AGENT is set explicitly: the payload sniffing is only a fallback.
-    return (f'HEADROOM_AGENT={agent} {python_command()} "{HOOK_SCRIPT}" {flag}')
+def default_python() -> str:
+    """The interpreter running the installer; never pythonw for hooks."""
+    executable = Path(sys.executable)
+    if executable.name.lower() == "pythonw.exe":
+        executable = executable.with_name("python.exe")
+    return str(executable)
 
 
-def windows_command(agent: str, flag: str) -> str:
-    executable = shutil.which("python") or sys.executable
-    return (f"$env:HEADROOM_AGENT='{agent}'; & \"{executable.replace(chr(92), '/')}\" "
-            f"\"{str(HOOK_SCRIPT).replace(chr(92), '/')}\" {flag}")
+def python_version(python: str) -> tuple[int, int] | None:
+    if python == sys.executable:
+        return sys.version_info[:2]
+    try:
+        result = subprocess.run([python, "-c", "import sys; print(*sys.version_info[:2])"],
+                                capture_output=True, text=True, timeout=20, check=True)
+        major, minor = result.stdout.split()
+        return int(major), int(minor)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
-def build_entry(agent: str, event: str, flag: str) -> dict:
-    shape = SHAPES[agent]
-    matcher, timeout = EVENTS[agent][event]
-    inner = {"type": "command", "command": hook_command(agent, flag), "timeout": timeout}
-    if shape["windows"]:
-        inner["commandWindows"] = windows_command(agent, flag)
-    if shape["async"]:
-        inner["async"] = True
-    if shape["status"]:
-        inner["statusMessage"] = ("Starting headroom display" if flag == START_FLAG
-                                  else "Charging headroom")
-    entry: dict = {}
-    if shape["matcher"] and matcher is not None:
-        entry["matcher"] = matcher
-    entry["hooks"] = [inner]
-    return entry
+def posix_command(python: str, hook: str, flag: str, display: str | None = None) -> str:
+    """A /bin/sh command line: no PowerShell, safe for paths with spaces."""
+    prefix = f"HEADROOM_DISPLAY={display} " if display else ""
+    return f"{prefix}{shlex.quote(python)} {shlex.quote(hook)} {flag}"
 
 
-def is_headroom_entry(entry: object) -> bool:
-    if not isinstance(entry, dict):
+def windows_command(python: str, hook: str, flag: str) -> str:
+    """The same PowerShell form install_windows.ps1 writes."""
+    return f'& "{python}" "{hook}" {flag}'.replace("\\", "/")
+
+
+def build_hooks(root: Path, python: str, display: str | None = None,
+                windows: bool | None = None) -> dict:
+    """Return headroom's ``hooks`` mapping, mirroring hooks.json.template."""
+    windows = sys.platform == "win32" if windows is None else windows
+    hook = str(root / "hooks" / HOOK_SCRIPT)
+    if windows:
+        hook = hook.replace("\\", "/")
+    events = {
+        "SessionStart": ("--session-start", 3, "Starting headroom dashboard",
+                         "startup|resume|clear|compact"),
+        "UserPromptSubmit": ("--user-prompt", 30, "Charging headroom", None),
+    }
+    hooks = {}
+    for event, (flag, timeout, status, matcher) in events.items():
+        if windows:  # Byte-for-byte what install_windows.ps1 writes from the template.
+            entry = {"type": "command", "command": f'python3 "{hook}" {flag}',
+                     "commandWindows": windows_command(python, hook, flag)}
+        else:  # Only SessionStart reads HEADROOM_DISPLAY; keep the charging hook plain.
+            entry = {"type": "command", "command": posix_command(
+                python, hook, flag, display if flag == "--session-start" else None)}
+        entry.update({"timeout": timeout, "async": True, "statusMessage": status})
+        block = {"matcher": matcher} if matcher else {}
+        block["hooks"] = [entry]
+        hooks[event] = [block]
+    return hooks
+
+
+def is_headroom_block(block: object) -> bool:
+    if not isinstance(block, dict) or not isinstance(block.get("hooks"), list):
         return False
-    for inner in entry.get("hooks") or []:
-        if isinstance(inner, dict) and MARKER in str(inner.get("command", "")):
-            return True
-    return False
+    return any(isinstance(hook, dict) and any(
+        isinstance(hook.get(key), str) and HOOK_SCRIPT in hook[key]
+        for key in ("command", "commandWindows", "command_windows"))
+        for hook in block["hooks"])
 
 
-def plan_agent(agent: str) -> dict:
-    """Describe the merge without touching disk."""
-    path = config_path(agent)
+def load_config(target: Path) -> dict:
+    if not target.exists():
+        return {}
+    data = json.loads(target.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"{target} must contain a JSON object with a 'hooks' object")
+    return data
+
+
+def without_headroom(data: dict) -> tuple[dict, int]:
+    result = {key: value for key, value in data.items() if key != "hooks"}
+    hooks, removed = {}, 0
+    for event, blocks in data.get("hooks", {}).items():
+        if not isinstance(blocks, list):
+            hooks[event] = blocks
+            continue
+        kept = [block for block in blocks if not is_headroom_block(block)]
+        removed += len(blocks) - len(kept)
+        if kept:
+            hooks[event] = kept
+    result["hooks"] = hooks
+    return result, removed
+
+
+def merged(data: dict, headroom_hooks: dict) -> dict:
+    result, _removed = without_headroom(data)
+    if not data:  # A new file mirrors hooks.json.template; never relabel a user's file.
+        result = {"description": DESCRIPTION, **result}
+    for event, blocks in headroom_hooks.items():
+        result["hooks"].setdefault(event, []).extend(blocks)
+    return result
+
+
+def backup(target: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = target.with_name(f"{target.name}.bak-{stamp}")
+    counter = 1
+    while path.exists():
+        path = target.with_name(f"{target.name}.bak-{stamp}-{counter}")
+        counter += 1
+    path.write_bytes(target.read_bytes())
+    return path
+
+
+def write_json(target: Path, data: dict) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".hooks-", suffix=".json", dir=target.parent)
     try:
-        document = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(document, dict):
-            raise ValueError("config root must be an object")
-    except FileNotFoundError:
-        document = {}
-    except ValueError as exc:
-        return {"agent": agent, "path": path, "ok": False,
-                "reason": f"refusing to rewrite an unparseable config: {exc}"}
-    hooks = document.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        return {"agent": agent, "path": path, "ok": False,
-                "reason": "'hooks' is not an object"}
-    changes = []
-    for event, flag in ((START_EVENT[agent], START_FLAG), (PROMPT_EVENT[agent], PROMPT_FLAG)):
-        entries = hooks.setdefault(event, [])
-        if not isinstance(entries, list):
-            return {"agent": agent, "path": path, "ok": False,
-                    "reason": f"'{event}' is not a list"}
-        replacement = build_entry(agent, event, flag)
-        for index, entry in enumerate(entries):
-            if is_headroom_entry(entry):
-                entries[index] = replacement
-                changes.append((event, "updated"))
-                break
-        else:
-            entries.append(replacement)
-            changes.append((event, "added"))
-    if SHAPES[agent]["description"]:
-        document.setdefault("description", "headroom: I need a reset.")
-    return {"agent": agent, "path": path, "ok": True, "changes": changes, "document": document}
-
-
-def write_config(path: Path, document: dict, backup: bool = True) -> Path | None:
-    """Atomic write, preserving the original file mode."""
-    saved = None
-    if path.exists() and backup:
-        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        saved = path.with_name(f"{path.name}.bak-headroom-{stamp}")
-        shutil.copy2(path, saved)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else None
-    handle, temporary = tempfile.mkstemp(prefix=".headroom-hooks-", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(document, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-        os.replace(temporary, path)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.replace(temporary, target)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    if mode is not None:
-        os.chmod(path, mode)
-    return saved
+        Path(temporary).unlink(missing_ok=True)
+
+
+def skill_link_path() -> Path:
+    # Codex discovers user skills in ~/.agents/skills and follows symlinks.
+    return Path.home() / ".agents" / "skills" / "headroom"
+
+
+def link_skill(root: Path, dry_run: bool) -> str:
+    link = skill_link_path()
+    if link.is_symlink() and link.resolve() == root.resolve():
+        return f"Skill link already present: {link}"
+    if link.exists() or link.is_symlink():
+        return f"Skipped skill link: {link} already exists and is not a link to {root}"
+    if not dry_run:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(root, target_is_directory=True)
+    return f"{'Would link' if dry_run else 'Linked'} skill: {link} -> {root}"
+
+
+def unlink_skill(root: Path, dry_run: bool) -> str | None:
+    link = skill_link_path()
+    if link.is_symlink() and link.resolve() == root.resolve():
+        if not dry_run:
+            link.unlink()
+        return f"{'Would remove' if dry_run else 'Removed'} skill link: {link}"
+    return None
+
+
+def install(args) -> int:
+    root = skill_root()
+    target = args.codex_home / "hooks.json"
+    if not (root / "hooks" / HOOK_SCRIPT).is_file():
+        print(f"error: {root / 'hooks' / HOOK_SCRIPT} not found", file=sys.stderr)
+        return 1
+    version = python_version(args.python)
+    if version is None or version < MIN_PYTHON:
+        found = "not runnable" if version is None else "Python %d.%d" % version
+        print(f"error: hooks need Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+, but {args.python} is "
+              f"{found}. Install a newer Python (python.org or Homebrew) and re-run with "
+              "--python /path/to/python3.", file=sys.stderr)
+        return 1
+    current = load_config(target)
+    updated = merged(current, build_hooks(root, args.python, args.display))
+    changed = updated != current
+    messages = []
+    if args.dry_run:
+        print(json.dumps(updated, indent=2, ensure_ascii=False))
+        messages.append(f"[dry run] Would {'update' if changed else 'leave unchanged'} {target}")
+    elif changed:
+        if target.exists():
+            messages.append(f"Backed up {target} to {backup(target)}")
+        write_json(target, updated)
+        messages.append(f"Installed headroom hooks in {target}")
+    else:
+        messages.append(f"headroom hooks already up to date in {target}")
+    data_dir = args.codex_home / "headroom"
+    if not args.dry_run:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    messages.append(f"Data directory: {data_dir}")
+    if args.link_skill:
+        messages.append(link_skill(root, args.dry_run))
+    print("\n".join(messages))
+    if changed and not args.dry_run:
+        print("Next: run /hooks in Codex, review and trust headroom's SessionStart and "
+              "UserPromptSubmit hooks, then start a new session.")
+    return 0
+
+
+def uninstall(args) -> int:
+    target = args.codex_home / "hooks.json"
+    messages = []
+    current = load_config(target)
+    updated, removed = without_headroom(current)
+    if not removed:
+        messages.append(f"No headroom hooks found in {target}")
+    elif args.dry_run:
+        messages.append(f"[dry run] Would remove {removed} headroom hook block(s) from {target}")
+    else:
+        messages.append(f"Backed up {target} to {backup(target)}")
+        if not updated["hooks"] and set(updated) <= {"hooks", "description"} \
+                and updated.get("description", DESCRIPTION) == DESCRIPTION:
+            target.unlink()
+            messages.append(f"Removed {target} (it only contained headroom hooks)")
+        else:
+            write_json(target, updated)
+            messages.append(f"Removed {removed} headroom hook block(s) from {target}")
+    unlinked = unlink_skill(skill_root(), args.dry_run)
+    if unlinked:
+        messages.append(unlinked)
+    messages.append(f"Kept your data in {args.codex_home / 'headroom'}; delete it manually if desired.")
+    print("\n".join(messages))
+    return 0
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--codex-home", type=Path, default=default_codex_home(),
+                        help="Codex home (default: $CODEX_HOME or ~/.codex)")
+    parser.add_argument("--python", default=default_python(),
+                        help="interpreter the hooks run with (default: this Python, "
+                             "so pip-installed desktop extras are found)")
+    parser.add_argument("--display", choices=DISPLAYS,
+                        help="what SessionStart opens on macOS/Linux; default: the web dashboard "
+                             "(desktop = menu bar card)")
+    parser.add_argument("--link-skill", action="store_true",
+                        help="also symlink the skill into ~/.agents/skills/headroom")
+    parser.add_argument("--uninstall", action="store_true", help="remove headroom's hooks")
+    parser.add_argument("--dry-run", action="store_true", help="show changes without writing")
+    args = parser.parse_args(argv)
+    if args.display and sys.platform == "win32":
+        parser.error("--display applies to macOS/Linux; on Windows set HEADROOM_DISPLAY instead")
+    return args
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--apply", action="store_true",
-                        help="actually write the configs; without it this is a preview")
-    parser.add_argument("--agents", default="codex,claude,gemini",
-                        help="comma list; default codex,claude,gemini")
-    parser.add_argument("--no-backup", action="store_true")
-    args = parser.parse_args(argv)
-    if not HOOK_SCRIPT.is_file():
-        parser.error(f"hook script not found: {HOOK_SCRIPT}")
-    selected = [name.strip() for name in args.agents.split(",") if name.strip()]
-    unknown = [name for name in selected if name not in SHAPES]
-    if unknown:
-        parser.error(f"unsupported agents: {', '.join(unknown)}")
-    for agent in selected:
-        result = plan_agent(agent)
-        if not result["ok"]:
-            print(f"[skip] {agent}: {result['reason']}")
-            continue
-        state = "would write" if not args.apply else "writing"
-        print(f"[{state}] {agent} -> {result['path']}")
-        for event, action in result["changes"]:
-            print(f"         {action}: {event}")
-        if args.apply:
-            saved = write_config(result["path"], result["document"],
-                                 backup=not args.no_backup)
-            if saved:
-                print(f"         backup: {saved}")
-    if not args.apply:
-        print("\nPreview only. Re-run with --apply to write.")
-        print("Trust the new definitions in each agent before they take effect.")
-    return 0
+    args = parse_args(argv)
+    try:
+        return uninstall(args) if args.uninstall else install(args)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

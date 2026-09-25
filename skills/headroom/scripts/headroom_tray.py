@@ -1,8 +1,21 @@
-"""Windows tray adapter. Native callbacks enqueue actions for the card controller."""
+"""Tray adapter (Windows notification area, macOS menu bar).
+
+Native callbacks only enqueue actions for the card controller.
+"""
 
 from __future__ import annotations
 
+import sys
 import threading
+
+
+def hide_dock_icon():
+    """Keep a menu-bar-only app out of the macOS Dock; harmless if AppKit is absent."""
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+    except Exception:
+        pass
 
 
 def draw_icon(percent, color):
@@ -61,6 +74,10 @@ class TrayIcon:
         return enqueue
 
     def start(self):
+        if sys.platform == "darwin":
+            self.start_detached()
+            return
+
         def setup(icon):
             try:
                 if not self.stopped.is_set():
@@ -84,6 +101,25 @@ class TrayIcon:
             self.close()
             raise RuntimeError("Could not start the Windows headroom tray icon") from self.error
 
+    def start_detached(self):
+        """AppKit status items must live on the main thread.
+
+        Call this from the Tk thread after ``tk.Tk()`` exists: Tk's Aqua event
+        loop already pumps the shared NSApplication, so no extra thread runs.
+        """
+        try:
+            hide_dock_icon()
+            self.icon.run_detached(setup=lambda _icon: None)
+            if not self.stopped.is_set():
+                self.icon.visible = True
+        except Exception as exc:
+            self.error = exc
+        finally:
+            self.ready.set()
+        if self.error or not self.icon.visible:
+            self.close()
+            raise RuntimeError("Could not start the macOS headroom menu bar icon") from self.error
+
     def update(self, labels, view, expanded):
         menu_changed = labels != self.labels or expanded != self.expanded
         self.labels, self.expanded = labels, expanded
@@ -97,6 +133,13 @@ class TrayIcon:
 
     def close(self):
         self.stopped.set()
+        if self.thread is None and sys.platform == "darwin":
+            # NSApplication belongs to Tk here; only remove our status item.
+            try:
+                self.icon.visible = False
+            except Exception:
+                pass
+            return
         self.icon.stop()
         if self.thread and self.thread is not threading.current_thread():
             self.thread.join(timeout=2)

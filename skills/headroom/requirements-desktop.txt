@@ -1,14 +1,16 @@
-# Optional desktop display; scoring and the web dashboard do not need these.
+# Optional tray display (Windows notification area or macOS menu bar); scoring and the web UI do not need these.
 #
-# Windows gets a system-tray card (pystray + pywebview + WebView2).
-# macOS gets a native menu bar item built on PyObjC, which must be installed
-# into a dedicated interpreter -- the recommended setup is:
+# Windows gets a tray card (pystray + Pillow); the animated WebView2 card adds
+# pywebview. macOS and Linux get the same tray card on Tk's main-thread event
+# loop, which is what pystray's macOS backend requires.
+#
+# pystray on macOS needs PyObjC, and headroom's hook finds a dedicated
+# interpreter automatically (HEADROOM_DESKTOP_PYTHON overrides):
 #
 #   python3 -m venv ~/.headroom/venv
 #   ~/.headroom/venv/bin/pip install -r skills/headroom/requirements-desktop.txt
-#
-# headroom's hook then finds it automatically (override with HEADROOM_DESKTOP_PYTHON).
-pystray==0.19.5; sys_platform == "win32"
+pystray==0.19.5
+Pillow>=10
 pywebview==6.2.1; sys_platform == "win32"
 pyobjc-framework-Cocoa>=10; sys_platform == "darwin"
-Pillow>=10
+pyobjc-framework-Quartz>=10; sys_platform == "darwin"
