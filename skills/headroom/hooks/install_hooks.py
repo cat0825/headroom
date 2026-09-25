@@ -448,7 +448,8 @@ def parse_args(argv=None):
                              f"separated list from {', '.join(AGENTS)}")
     parser.add_argument("--display", choices=DISPLAYS,
                         help="what SessionStart opens on macOS/Linux; default: the web dashboard "
-                             "(desktop = menu bar card)")
+                             "(desktop = the tray or menu bar card, and falls back to the web "
+                             "dashboard where that is unavailable)")
     parser.add_argument("--link-skill", action="store_true",
                         help="also symlink the skill into ~/.agents/skills/headroom")
     parser.add_argument("--uninstall", action="store_true", help="remove headroom's hooks")
