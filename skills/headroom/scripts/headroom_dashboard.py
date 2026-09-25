@@ -275,7 +275,7 @@ async function refresh(){
   document.getElementById('fill').style.width=Math.max(0,Math.min(100,percent))+'%';
   updateMood(percent);
   meta.textContent=TEXT.spent+' '+data.spent_points.toFixed(2)+' / '+data.cap_points+' '+TEXT.points
-   +(data.spent_origin==='counts'?TEXT.from_counts:'');
+   +(data.spent_origin==='ledger'?'':TEXT.from_counts);
   document.getElementById('updated').textContent=TEXT.updated+new Date().toLocaleTimeString(TEXT.locale);
   meta.classList.remove('error');
   updateSources(data);

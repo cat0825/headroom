@@ -29,11 +29,13 @@ Send a message. Spend a few imaginary brain points — in Codex, Claude Code, op
 
   | Value | Behaviour |
   | --- | --- |
-  | `auto` (default) | Count today's messages until a hook scores a turn, then switch to the ledger |
+  | `auto` (default) | **Per agent**: scored debits where a hook charged today, that agent's message count everywhere else |
   | `ledger` | Scored debits only. Without hooks, spend stays 0 and the meter reads 100% |
   | `counts` | Always `today's messages × 2`, ignoring the ledger |
 
-  The ×2 matches the cap's ×2, so a day as busy as your busiest recorded day reads 0% left. Counting and scoring never mix within one day, which is what stops a turn from being charged twice.
+  The ×2 matches the cap's ×2, so a day as busy as your busiest recorded day reads 0% left.
+
+  `auto` resolves **per agent, not per day**. A single switch for the whole day means one Codex charge erases every other agent's day, so with a hook on only one agent the other agents' conversations would stop counting the moment it fired.
 - **One balance across sessions and across tools.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 334 points`, plus a per-agent source breakdown, without a separate remaining-points number.
 - **Refresh without spending.** The dashboard refreshes every 10 seconds. Refreshing or switching its language never charges. A new chat is not required for each debit.
 - **Keep it in your menu bar or taskbar.** A native macOS status item or a Windows tray icon; no browser tab or floating ball required.

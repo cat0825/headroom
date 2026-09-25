@@ -424,6 +424,78 @@ class LedgerMigrationTests(AdapterFixture):
             budget.allocate_event_id(self.root / "l.sqlite3", "claude", "bad key!")
 
 
+class SpendSourceTests(AdapterFixture):
+    """Today's spend resolves per agent, not once for the whole day.
+
+    One switch for the day means a single Codex charge erases every other
+    agent's day, which is both surprising and wrong.
+    """
+
+    def base(self, **today):
+        per_agent = {"codex": 10, "workbuddy": 84}
+        per_agent.update(today)
+        counts = {day.isoformat(): 0 for day in
+                  adapters.day_bounds(*budget.window(date(2026, 9, 25)))}
+        return {"peak_date": "2026-09-23", "peak_messages": 105, "cap_points": 210,
+                "provisional_floor": False, "per_agent_counts": {},
+                "per_agent_today": per_agent,
+                "today_messages": sum(per_agent.values()),
+                "agents": [], "daily_message_counts": counts}
+
+    def test_no_hook_counts_every_agent(self):
+        resolved = budget.resolve_spent(self.base(), date(2026, 9, 25), self.root / "l.sqlite3")
+        self.assertEqual(resolved["origin"], "counts")
+        self.assertEqual(resolved["points"], 94 * budget.COUNT_POINTS)
+        self.assertEqual(resolved["scored_agents"], [])
+
+    def test_a_scored_agent_does_not_erase_the_counted_ones(self):
+        state = self.root / "l.sqlite3"
+        base = self.base()
+        budget.score_event(base, date(2026, 9, 25), state, "c1", "manual-user",
+                           "normal", "mock", "", 3.0, False, "codex")
+        resolved = budget.resolve_spent(base, date(2026, 9, 25), state)
+        self.assertEqual(resolved["origin"], "mixed")
+        # 3.0 scored for codex + 84 messages x 2 for workbuddy, counted once each.
+        self.assertEqual(resolved["points"], 3.0 + 84 * budget.COUNT_POINTS)
+        self.assertEqual(resolved["scored_agents"], ["codex"])
+        self.assertEqual(resolved["counted_agents"], ["workbuddy"])
+
+    def test_scoring_every_agent_switches_wholly_to_the_ledger(self):
+        state = self.root / "l.sqlite3"
+        base = self.base()
+        for agent, points in (("codex", 3.0), ("workbuddy", 5.0)):
+            budget.score_event(base, date(2026, 9, 25), state, f"{agent}-1",
+                               "manual-user", "normal", "mock", "", points, False, agent)
+        resolved = budget.resolve_spent(base, date(2026, 9, 25), state)
+        self.assertEqual(resolved["origin"], "ledger")
+        self.assertEqual(resolved["points"], 8.0)
+        self.assertEqual(resolved["counted_agents"], [])
+
+    def test_explicit_modes_ignore_the_other_side(self):
+        state = self.root / "l.sqlite3"
+        base = self.base()
+        budget.score_event(base, date(2026, 9, 25), state, "c1", "manual-user",
+                           "normal", "mock", "", 3.0, False, "codex")
+        with patch.dict(os.environ, {"HEADROOM_SPENT_SOURCE": "counts"}):
+            self.assertEqual(budget.resolve_spent(base, date(2026, 9, 25), state)["points"],
+                             94 * budget.COUNT_POINTS)
+        with patch.dict(os.environ, {"HEADROOM_SPENT_SOURCE": "ledger"}):
+            self.assertEqual(budget.resolve_spent(base, date(2026, 9, 25), state)["points"], 3.0)
+        with patch.dict(os.environ, {"HEADROOM_SPENT_SOURCE": "nonsense"}), \
+                self.assertRaises(ValueError):
+            budget.resolve_spent(base, date(2026, 9, 25), state)
+
+    def test_an_agent_with_no_messages_and_no_debits_adds_nothing(self):
+        state = self.root / "l.sqlite3"
+        base = self.base(claude=0)
+        budget.score_event(base, date(2026, 9, 25), state, "c1", "manual-user",
+                           "normal", "mock", "", 3.0, False, "codex")
+        resolved = budget.resolve_spent(base, date(2026, 9, 25), state)
+        self.assertNotIn("claude", resolved["counted_agents"])
+        self.assertNotIn("claude", resolved["scored_agents"])
+        self.assertEqual(resolved["points"], 3.0 + 84 * budget.COUNT_POINTS)
+
+
 class HookNormalizationTests(AdapterFixture):
     def test_field_aliases_cover_other_agents(self):
         self.assertEqual(hook.first_string({"user_prompt": "hi"},
