@@ -62,6 +62,20 @@ if mode == "--charge":
     print("charge e2e OK:", rows)
 else:
     # macOS: SessionStart with --display desktop must leave a detached display running.
+    if mode == "--desktop-fallback":
+        # Diagnose the fallback directly first, with stderr visible.
+        direct = subprocess.Popen([sys.executable, str(REPO / "skills/headroom/scripts/headroom_desktop.py"),
+                                   "--codex-home", str(codex), "--state-path", str(root / "direct.sqlite3")],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and not port_up() and direct.poll() is None:
+            time.sleep(0.5)
+        up = port_up()
+        direct.kill()
+        print("direct run: port up =", up, "exit =", direct.poll(), "after %.1fs" % (time.monotonic() - deadline + 40))
+        print(direct.stdout.read().decode(errors="replace"))
+        assert up, "direct fallback did not start the dashboard"
+        time.sleep(1)
     run(sys.executable, str(INSTALLER), "--display", "desktop")
     hooks = json.loads((codex / "hooks.json").read_text())
     launch_env = {k: v for k, v in env.items() if k != "HEADROOM_DISABLE_DASHBOARD"}
@@ -89,7 +103,7 @@ else:
             assert not port_up(), "desktop mode must not need the web dashboard"
             print("menu bar display running:", ps.split())
         else:
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 40
             while time.monotonic() < deadline and not port_up():
                 time.sleep(1)
             assert port_up(), "fallback web dashboard did not start"

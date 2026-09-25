@@ -84,8 +84,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         data = json.loads(self.target.read_text(encoding="utf-8"))
         self.assertEqual(data["description"], installer.DESCRIPTION)
-        command = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-        self.assertIn(installer.default_python(), shlex.split(command, posix=sys.platform != "win32")[0])
+        entry = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        if sys.platform == "win32":
+            self.assertIn(installer.default_python().replace("\\", "/"), entry["commandWindows"])
+        else:
+            self.assertEqual(shlex.split(entry["command"])[0], installer.default_python())
         self.assertTrue((self.codex / "headroom").is_dir())
         before = self.target.read_bytes()
         code, output = self.run_installer()
