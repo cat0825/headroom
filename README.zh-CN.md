@@ -8,10 +8,10 @@ AI 有使用额度，你的大脑也该有。
 
 [English](README.md) · **简体中文**
 
-一个本地优先的 **Codex 插件 / Skill**，给大脑也配个日限额。<br>
-发一句话，扣一点虚构的脑力。
+一个本地优先的**多 agent 插件 / Skill**，给大脑也配个日限额。<br>
+发一句话，扣一点虚构的脑力 —— 在 Codex、Claude Code、opencode、Antigravity、WorkBuddy 里都算。
 
-[快速开始](#快速开始) · [任务栏托盘](#desktop-orb) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
+[支持的 agent](#支持的-agent) · [快速开始](#快速开始) · [任务栏托盘](#desktop-orb) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
 
 </div>
 
@@ -24,24 +24,75 @@ AI 有使用额度，你的大脑也该有。
 
 ## 聊天时会发生什么？
 
-- **按你的习惯给额度。** 取之前七个完整自然日中，用户消息最多的一天，消息数乘以二。这个窗口没有历史消息时，暂用两点。
-- **每条符合条件的消息扣一点。** 一轮直接互动得到 0–10 分；同一个 session/turn ID 重试只扣一次。
-- **跨会话共用一个余额。** 本地共享账本驱动百分比、进度条和表情。显示「已用 12.50 / 334 点」，不额外显示剩余多少点。
-- **刷新不扣点。** 面板每 10 秒自动刷新；刷新和切换界面语言都不扣点。不需要每发一句话就新建会话。
-- **收进任务栏。** 一个小 H 托盘图标，点击才展开用量卡片。直接读取本地账本，不用浏览器标签页，也不占桌面位置。
+- **按你的习惯给额度，跨 agent 合并计算。** 取之前七个完整自然日中用户消息最多的一天，把当天**所有** agent 的消息数相加，再乘以二。这个窗口没有历史消息时，暂用两点。**今天不在额度窗口内。**
+- **分子只算今天。** 消耗在本地零点重置，来源由 `HEADROOM_SPENT_SOURCE` 决定：
 
-自然日按 **Asia/Shanghai（UTC+8）** 划分。计算七天基准时会统计**所有**记录为 `userMessage` 的消息，包括自动任务；来源筛选只影响扣点，不影响额度基准。
+  | 取值 | 行为 |
+  | --- | --- |
+  | `auto`（默认） | 先按今天的对话条数估算；一旦有钩子评过分，就切到账本 |
+  | `ledger` | 只认评分扣点。没装钩子时消耗恒为 0，表盘显示 100% |
+  | `counts` | 始终按「今天条数 × 2」，不看账本 |
+
+  这个 ×2 和额度基准的 ×2 对齐，所以「今天和你最忙的一天一样忙」就等于剩余 0%。同一天内估算和评分**不会混算**，这是避免重复扣点的关键。
+- **跨会话、跨工具共用一个余额。** 本地共享账本驱动百分比、进度条和表情。显示「已用 12.50 / 334 点」，并附各 agent 的来源明细，不额外显示剩余多少点。
+- **刷新不扣点。** 面板每 10 秒自动刷新；刷新和切换界面语言都不扣点。不需要每发一句话就新建会话。
+- **收进菜单栏 / 任务栏。** macOS 原生状态栏图标，或 Windows 托盘图标；不用浏览器标签页，也不占桌面位置。
+
+自然日按 **Asia/Shanghai（UTC+8）** 划分。计算七天基准时会统计**所有**记录为用户消息的条目，包括自动任务；来源筛选只影响扣点，不影响额度基准。
+
+## 支持的 agent
+
+发现是自动的：headroom 逐个询问适配器本机是否存在它的历史，然后读取回答「有」的那些。agent 的任何细节都不会泄漏到账本、评分器或显示层。
+
+| agent | 历史来源 | 钩子 |
+| --- | --- | --- |
+| `codex` | `$CODEX_HOME/thread_history_1.sqlite` → `thread_items` | ✅ |
+| `claude` | `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl`（回退到 `history.jsonl`） | ✅ |
+| `opencode` | `$XDG_DATA_HOME/opencode/opencode.db` → `message` | — |
+| `antigravity` | `$GEMINI_DIR/antigravity/brain/*/.system_generated/logs/transcript_full.jsonl` | ✅ |
+| `workbuddy` | `$WORKBUDDY_HOME/projects/*.jsonl` | — |
+
+```text
+python3 skills/headroom/scripts/headroom.py agents
+```
+
+列出每个适配器、本机是否可读、以及最近每天的计数。
+
+**会话记录不等于轮次日志。** Claude Code 会把工具结果当作 user 角色消息回放，所以 Claude 适配器要求正文是纯字符串或含 `text` 块，并剔除 `system`/`sdk` 来源和 sidechain 记录。Codex 和 opencode 直接查 SQL。如果按原始记录条数统计，除了 Codex 之外每个 agent 的额度基准都会失去意义。
+
+**不需要装钩子就能看到额度基准、各 agent 明细和消耗。** 显示层每次刷新都会重读本地历史，默认按今天的对话条数估算消耗；装了钩子之后才会升级成评分值。
+
+### 不改代码新增 agent
+
+在 `$HEADROOM_AGENTS_CONFIG`（默认 `~/.headroom/agents.json`）里声明：
+
+```json
+{"agents": [
+  {"name": "aider", "label": "Aider", "kind": "jsonl", "root": "~/.aider",
+   "glob": "**/*.history", "where": {"role": "user"},
+   "day_field": "timestamp", "day_format": "ms"}
+]}
+```
+
+`kind` 为 `jsonl` 或 `sqlite`；`day_format` 为 `ms`、`iso` 或 `epoch`。同名的声明式 agent 会覆盖内置适配器。
 
 ## 快速开始
 
 网页面板中，点击表情图片会先向上跳动，再原地播放一段有声音的视频。第一次点击播放「诶大狗」。两次图片点击间隔小于 3.5 秒时，从其余八段（大狗叫 1–5、叫叫、大狗叫叫叫哒哒哒、INDUSTRY BABY）中随机播放一段，不连续重复当前片段；间隔达到 3.5 秒则从诶大狗重新开始。「大狗叫叫叫哒哒哒」和「INDUSTRY BABY」只播放音频，当前脑力状态图片随实时音频强弱和节拍峰值上跳、旋转、缩放，结束或切换时复原（系统开启减少动态效果时关闭律动），其余七段播放视频；播完恢复当前脑力状态图片，不自动连播。播放中再点会停止当前片段，按同样的点击间隔规则选取片段；图片按钮获得焦点时按 Esc 可停止。余额刷新不打断播放，播放视频不扣脑力值。卡片右下角的小喇叭图标可随时切换声音开 / 静音，不打断播放；浏览器记住设置，静音时图片律动继续。
 
-当前自动安装流程面向 **Windows + PowerShell 上的 Codex**。需要 Python 3.10+，以及本机 Codex 历史索引 `thread_history_1.sqlite`。Mock 和网页面板只用 Python 标准库。
+自动安装覆盖 **Codex、Claude Code、Gemini**；只读表盘在任何平台、任何受支持的 agent 上都能用。需要 Python 3.10+。Mock 评分和网页面板只用 Python 标准库。
 
-```powershell
+```bash
 git clone https://github.com/llm-learner/headroom.git
 cd headroom
-python skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom.py agents    # 本机有什么
+python3 skills/headroom/scripts/headroom.py status    # 只读余额
+python3 skills/headroom/scripts/headroom_dashboard.py --lang zh
+```
+
+打开[中文网页面板](http://127.0.0.1:8766/?lang=zh)。面板每十秒自动刷新，永不扣点。Windows 上的动态托盘卡片需要额外依赖：
+
+```powershell
 python -m pip install -r skills/headroom/requirements-desktop.txt
 pythonw skills/headroom/scripts/headroom_desktop.py --lang zh
 ```
@@ -50,19 +101,52 @@ pythonw skills/headroom/scripts/headroom_desktop.py --lang zh
 
 ### 开启自动扣点
 
-在仓库根目录审查并执行：
+先预览，再应用：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1
+```bash
+python3 skills/headroom/hooks/install_hooks.py                # 预览
+python3 skills/headroom/hooks/install_hooks.py --apply        # 合并进已检测到的 agent
+python3 skills/headroom/hooks/install_hooks.py --apply --agents claude,gemini
 ```
 
-在 Codex `/hooks` 中审查并信任 headroom 的 **SessionStart** 和 **UserPromptSubmit**。首次安装钩子后，新开一个会话验证激活。之后在同一个会话继续发消息就能扣点，**不需要反复新建会话**。
+它会合并进 `$CODEX_HOME/hooks.json`、`$CLAUDE_CONFIG_DIR/settings.json` 和 `$GEMINI_DIR/settings.json`，保留无关的钩子条目，先备份每个被修改的文件，并拒绝改写无法解析的配置。Windows 上仍可用 `powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1` 单独安装 Codex 的钩子。
 
-`SessionStart` 在 Windows 上启动托盘显示（其他平台启动网页面板）；`UserPromptSubmit` 在提交消息后异步评分，**不是等助手回复结束才评分**。数值会在评分完成、界面刷新后出现。安装器不会覆盖已存在的 `hooks.json`；有其他钩子时请合并两条定义，不要直接强制覆盖。
+在各自 agent 的 `/hooks`（Codex、Claude Code、Gemini）中审查并信任 headroom 的 **SessionStart** 和 **UserPromptSubmit**。首次安装钩子后，新开一个会话验证激活。之后在同一个会话继续发消息就能扣点，**不需要反复新建会话**。
 
-要把 `$headroom` 作为 Codex Skill 使用，可以通过本地插件市场安装这个仓库，或把 `skills/headroom` 复制到 Codex 的 skills 目录。仅安装插件 / Skill 不会自动启用或信任生命周期钩子。请保留钩子指向的源目录。
+`SessionStart` 在 Windows 上启动托盘显示（其他平台启动网页面板）；`UserPromptSubmit` 在提交消息后异步评分，**不是等助手回复结束才评分**。数值会在评分完成、界面刷新后出现。
+
+opencode 和 WorkBuddy 没有 JSON 钩子配置，因此它们会参与额度基准和各 agent 明细，但不会累积 `spent_points`。要把 `$headroom` 作为 Skill 使用，可以通过本地插件市场安装这个仓库，或把 `skills/headroom` 复制到对应 agent 的 skills 目录。仅安装插件 / Skill 不会自动启用或信任生命周期钩子。请保留钩子指向的源目录。
 
 <a id="desktop-orb"></a>
+
+## 菜单栏（macOS）
+
+```bash
+python3 -m venv ~/.headroom/venv
+~/.headroom/venv/bin/pip install -r skills/headroom/requirements-desktop.txt
+python3 skills/headroom/hooks/install_macos_app.py
+```
+
+会构建 `~/Applications/headroom.app` 并启动。系统状态栏显示剩余百分比，低于 30% 变红。点击展开用量卡片：
+
+```text
+脑力剩余 48.57%
+已用 108.00 / 210 点（按对话条数估算）
+今天 54 条
+来源 workbuddy 48 · codex 6
+─────────
+刷新
+打开网页面板
+语言 ▸
+─────────
+退出 headroom
+```
+
+这是基于 PyObjC 的原生 `NSStatusItem` —— 没有 Tk 窗口、没有 Dock 图标、不占浏览器标签页。读取跑在后台线程，每十秒把结果交给主 run loop，所以历史扫描永远不会卡住界面。建议装在独立 venv 里，钩子会自动找到它（`HEADROOM_DESKTOP_PYTHON` 可覆盖解释器）。账本上的 `flock` 保证每份账本只有一个图标。
+
+> **要装 `.app`，不要直接跑 `headroom_menubar.py`。** 裸解释器进程虽然能向 LaunchServices 注册状态项，但在 macOS 26 上图标经常**不会渲染** —— 进程没有 bundle 身份。`.app` 里只是一层 shell 包装，改 Python 源码下次启动就生效；`--uninstall` 可移除。
+
+诊断日志在 `~/.headroom/logs/menubar.log`。图标不见了先看它：里面记录了启动、解析到的账本路径、`statusItem.isVisible()` 和每次刷新。要开机自启，在「系统设置 → 通用 → 登录项」里加上 `headroom.app`。
 
 ## 任务栏托盘（Windows）
 
@@ -129,20 +213,24 @@ python skills/headroom/scripts/headroom_dashboard.py --lang zh
 
 | 数据 | headroom 如何处理 |
 | --- | --- |
-| 过去的 Codex 对话 | 只查询消息类型 / 时间戳元数据来计数，不读取历史提示词正文 |
+| 过去的对话 | 只查询消息类型 / 时间戳元数据来计数，不读取历史提示词正文。agent 数据库一律以只读方式打开 |
 | 当前符合条件的提示词 | 在内存中传给 Mock 或配置的本地 Laya 服务 |
-| 扣点账本 | 保存不透明事件 ID、本地日期、数值分数和 provider，不保存提示词 |
-| 钩子诊断 | 只保留最近一次结果、时间、输入是否存在 / 长度以及评分元数据，不保存提示词或原始 session/turn ID |
+| 扣点账本 | 保存不透明事件 ID、本地日期、数值分数、provider 和 agent 名称，不保存提示词 |
+| 钩子诊断 | 只保留最近一次结果、时间、输入是否存在 / 长度、agent 名称以及评分元数据，不保存提示词或原始 session/turn ID |
 | 托盘 / 桌面显示 | 读取本地历史元数据和账本；动态卡片使用临时回环服务和打包素材，不调用云端评分；只保存位置 / 语言 / 静音偏好 |
 | 面板 | 仅监听 `127.0.0.1`；图片随仓库附带，不加载 CDN 或统计脚本 |
 
-默认共享账本是 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`），可用 `HEADROOM_STATE_PATH` 覆盖。不要公开运行时状态、诊断文件、Codex 历史或凭据。
+默认共享账本是 `~/.headroom/ledger.sqlite3`；若已存在旧版的 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`）则沿用旧路径，避免凭空从零开始。可用 `HEADROOM_STATE_PATH` 覆盖。打开由 headroom 0.x 写入的账本时会原地迁移，并把已有记录归属到 `codex`。不要公开运行时状态、诊断文件、agent 历史或凭据。
 
-上述说明针对 **headroom**，不改变 Codex 自身的数据处理方式。单独部署的模型服务可能有自己的日志和联网行为，需要自行配置。未来若接云端 Jev，必须显式选择启用，并单独说明哪些数据会离开本机。
+七天窗口开始之前就未再改动过的文件会被跳过而不读取 —— 这是 159 MB 历史目录不会在每十秒刷新时被重新扫描的原因。
+
+上述说明针对 **headroom**，不改变各 agent 自身的数据处理方式。单独部署的模型服务可能有自己的日志和联网行为，需要自行配置。未来若接云端 Jev，必须显式选择启用，并单独说明哪些数据会离开本机。
 
 ## 哪些对话会扣点？
 
 目标是只计算人主动参与的对话，不计算无人值守的工作。钩子会拒绝已知非交互来源和 plan 模式；手动评分 CLI 也会拒绝非 normal 模式或未确认来源。
+
+钩子会归一化各 agent 的载荷字段 —— `prompt`/`user_prompt`、`session_id`/`sessionId`、`turn_id`/`promptId`、`permission_mode`/`permissionMode` —— 并显式设置 `HEADROOM_AGENT`。Codex 提供 `turn_id`；Claude Code 和 Gemini 没有，因此 headroom 会从账本的 `hook_turns` 表分配一个持久的会话内序号。同一会话里两个不同的问题会扣两次；同一个轮次被重复投递只扣一次。`turn_id` 存在但为空视为载荷异常，直接跳过。
 
 **自动识别来源是尽力而为，不是精确保证。** 当前钩子载荷不一定能可靠标识 Goal、自动任务或子代理。为兼容正常对话，缺少来源字段时默认接受；`HEADROOM_HOOK_STRICT=1` 会拒绝这类消息，但也可能漏掉普通聊天。不要把这个娱乐性筛选当成审计级规则。
 

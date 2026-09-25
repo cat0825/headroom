@@ -8,10 +8,10 @@ Your AI has a usage limit. So do you.
 
 **English** · [简体中文](README.zh-CN.md)
 
-A local-first **Codex plugin and skill** that gives your brain a daily budget.<br>
-Send a message. Spend a few imaginary brain points.
+A local-first **multi-agent plugin and skill** that gives your brain a daily budget.<br>
+Send a message. Spend a few imaginary brain points — in Codex, Claude Code, opencode, Antigravity, or WorkBuddy.
 
-[Quick start](#quick-start) · [Taskbar tray](#taskbar-tray-windows) · [English UI](#dashboard-language) · [Jev & Laya](#jev-laya-and-mock-scoring) · [Privacy](#privacy)
+[Supported agents](#supported-agents) · [Quick start](#quick-start) · [Taskbar tray](#taskbar-tray-windows) · [English UI](#dashboard-language) · [Jev & Laya](#jev-laya-and-mock-scoring) · [Privacy](#privacy)
 
 </div>
 
@@ -24,24 +24,75 @@ Send a message. Spend a few imaginary brain points.
 
 ## What happens when you chat?
 
-- **A daily limit based on you.** Take the busiest day in the previous seven complete days, count its user messages, and multiply by two. No history within that window? Start with two points.
-- **A tiny debit per eligible prompt.** Each direct interactive turn gets a 0–10 score. Retries of the same session/turn ID only charge once.
-- **One balance across sessions.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 334 points`, without a separate remaining-points number.
-- **Refresh without spending.** The dashboard refreshes every 10 seconds. Refreshing or switching its language never charges. A new chat is not required for each debit.
-- **Keep it in your taskbar.** A small H tray icon opens a usage card on click. No browser tab or floating ball needed; it reads the local ledger directly.
+- **A daily limit based on you, pooled across every agent.** Take the busiest day in the previous seven complete days, sum that day across every readable agent, and multiply by two. No history within that window? Start with two points. **Today is not part of the cap window.**
+- **The numerator is today only.** The spend resets at local midnight, and `HEADROOM_SPENT_SOURCE` decides where it comes from:
 
-The day boundary is **Asia/Shanghai (UTC+8)**. The seven-day cap counts **all** recorded `userMessage` items, including automated ones; eligibility filtering applies to debits, not the cap.
+  | Value | Behaviour |
+  | --- | --- |
+  | `auto` (default) | Count today's messages until a hook scores a turn, then switch to the ledger |
+  | `ledger` | Scored debits only. Without hooks, spend stays 0 and the meter reads 100% |
+  | `counts` | Always `today's messages × 2`, ignoring the ledger |
+
+  The ×2 matches the cap's ×2, so a day as busy as your busiest recorded day reads 0% left. Counting and scoring never mix within one day, which is what stops a turn from being charged twice.
+- **One balance across sessions and across tools.** A shared local ledger powers the percentage-left meter, progress bar, and meme mood. It also shows `Used 12.50 / 334 points`, plus a per-agent source breakdown, without a separate remaining-points number.
+- **Refresh without spending.** The dashboard refreshes every 10 seconds. Refreshing or switching its language never charges. A new chat is not required for each debit.
+- **Keep it in your menu bar or taskbar.** A native macOS status item or a Windows tray icon; no browser tab or floating ball required.
+
+The day boundary is **Asia/Shanghai (UTC+8)**. The seven-day cap counts **all** recorded user-message items, including automated ones; eligibility filtering applies to debits, not the cap.
+
+## Supported agents
+
+Discovery is automatic: headroom asks each adapter whether its local history exists and reads the ones that answer yes. Nothing about an agent leaks into the ledger, the scorer, or the display.
+
+| Agent | History source | Hook |
+| --- | --- | --- |
+| `codex` | `$CODEX_HOME/thread_history_1.sqlite` → `thread_items` | ✅ |
+| `claude` | `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl` (falls back to `history.jsonl`) | ✅ |
+| `opencode` | `$XDG_DATA_HOME/opencode/opencode.db` → `message` | — |
+| `antigravity` | `$GEMINI_DIR/antigravity/brain/*/.system_generated/logs/transcript_full.jsonl` | ✅ |
+| `workbuddy` | `$WORKBUDDY_HOME/projects/*.jsonl` | — |
+
+```text
+python3 skills/headroom/scripts/headroom.py agents
+```
+
+lists every adapter, whether it is readable here, and its recent per-day counts.
+
+**A transcript is not a turn log.** Claude Code replays tool results back as user-role messages, so the Claude adapter requires a plain string body or a `text` block and drops `system`/`sdk` prompt sources and sidechain records. Codex and opencode are read straight from SQL. Counting raw records would make the cap meaningless on every agent except Codex.
+
+**No hook is needed to see the cap, the per-agent breakdown, or the spend.** The display re-reads local history on every refresh and, by default, counts today's messages. Installing a hook upgrades that estimate to a scored value.
+
+### Add an agent without touching code
+
+Declare it in `$HEADROOM_AGENTS_CONFIG` (default `~/.headroom/agents.json`):
+
+```json
+{"agents": [
+  {"name": "aider", "label": "Aider", "kind": "jsonl", "root": "~/.aider",
+   "glob": "**/*.history", "where": {"role": "user"},
+   "day_field": "timestamp", "day_format": "ms"}
+]}
+```
+
+`kind` is `jsonl` or `sqlite`; `day_format` is `ms`, `iso`, or `epoch`. A declared agent overrides a built-in of the same name.
 
 ## Quick start
 
 In the web dashboard, click the mood image to make it hop and play one local dog clip with sound. The first click plays Hey Dog. Consecutive image clicks less than 3.5 seconds apart randomly select one of the other eight clips (dog barks 1–5, Call, Dadada, or Industry Baby), without immediately repeating the current clip. A gap of 3.5 seconds or more restarts at Hey Dog. Dadada and Industry Baby play audio only while the current mood image bounces, rotates and scales to the live audio energy and beat peaks; reduced-motion settings disable these effects; the other seven clips show video. Playback ends on the current mood image without automatically starting another clip; clicking during playback stops it and applies the same click-interval rule. Press Esc while the image button is focused to stop. Refreshing the balance does not interrupt playback, and playing clips never spends points. Use the small speaker icon in the bottom-right corner of the card to change sound immediately without restarting playback. The browser remembers this setting; muting does not stop the audio-reactive animation.
 
-The current automatic setup targets **Codex on Windows with PowerShell**. You need Python 3.10+ and a local Codex history index (`thread_history_1.sqlite`). Mock scoring and the dashboard use only Python's standard library.
+The automatic setup covers **Codex, Claude Code, and Gemini**; the read-only meter works for every supported agent on any platform. You need Python 3.10+. Mock scoring and the dashboard use only Python's standard library.
 
-```powershell
+```bash
 git clone https://github.com/llm-learner/headroom.git
 cd headroom
-python skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom.py agents    # what is on this machine
+python3 skills/headroom/scripts/headroom.py status    # read-only balance
+python3 skills/headroom/scripts/headroom_dashboard.py --lang en
+```
+
+Open [the English web dashboard](http://127.0.0.1:8766/?lang=en). The dashboard refreshes every ten seconds and never charges. On Windows, the animated taskbar card needs the extra packages:
+
+```powershell
 python -m pip install -r skills/headroom/requirements-desktop.txt
 pythonw skills/headroom/scripts/headroom_desktop.py --lang en
 ```
@@ -50,19 +101,52 @@ A small H icon appears in the Windows taskbar notification area, possibly under 
 
 ### Enable automatic debits
 
-From the repository root, review and run:
+Preview, then apply:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1
+```bash
+python3 skills/headroom/hooks/install_hooks.py                # preview
+python3 skills/headroom/hooks/install_hooks.py --apply        # merge into detected agents
+python3 skills/headroom/hooks/install_hooks.py --apply --agents claude,gemini
 ```
 
-Review and trust headroom's **SessionStart** and **UserPromptSubmit** definitions in Codex `/hooks`. After the initial hook setup, start a new session to verify activation. Subsequent messages in that session can charge normally; you do **not** need to keep making new sessions.
+It merges into `$CODEX_HOME/hooks.json`, `$CLAUDE_CONFIG_DIR/settings.json`, and `$GEMINI_DIR/settings.json`, preserves unrelated hook entries, backs up every modified file, and refuses to rewrite an unparseable config. On Windows, `powershell -ExecutionPolicy Bypass -File skills/headroom/hooks/install_windows.ps1` remains available for Codex alone.
 
-`SessionStart` launches the tray display on Windows (the web dashboard on other platforms). `UserPromptSubmit` scores after submission, asynchronously—not after the assistant finishes. Allow scoring to finish and the display to refresh. The installer refuses to overwrite an existing `hooks.json`; merge the two definitions with your other hooks instead of blindly forcing an overwrite.
+Review and trust headroom's **SessionStart** and **UserPromptSubmit** definitions in each agent (Codex `/hooks`, Claude Code `/hooks`, Gemini `/hooks`). After the initial hook setup, start a new session to verify activation. Subsequent messages in that session can charge normally; you do **not** need to keep making new sessions.
 
-To expose `$headroom` as a Codex skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into your Codex skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
+`SessionStart` launches the tray display on Windows (the web dashboard on other platforms). `UserPromptSubmit` scores after submission, asynchronously—not after the assistant finishes. Allow scoring to finish and the display to refresh.
+
+opencode and WorkBuddy have no JSON hook config, so they contribute to the cap and the per-agent breakdown but do not accrue `spent_points`. To expose `$headroom` as an agent skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into that agent's skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
 
 <a id="desktop-orb-windows"></a>
+
+## Menu bar (macOS)
+
+```bash
+python3 -m venv ~/.headroom/venv
+~/.headroom/venv/bin/pip install -r skills/headroom/requirements-desktop.txt
+python3 skills/headroom/hooks/install_macos_app.py
+```
+
+That builds `~/Applications/headroom.app` and launches it. A native status bar item shows the percent left; it turns red below 30%. Clicking it drops a usage card:
+
+```text
+脑力剩余 48.57%
+已用 108.00 / 210 点（按对话条数估算）
+今天 54 条
+来源 workbuddy 48 · codex 6
+─────────
+刷新
+打开网页面板
+语言 ▸
+─────────
+退出 headroom
+```
+
+It is a real `NSStatusItem` built on PyObjC — no Tk window, no Dock icon, no browser tab. The reader runs on a worker thread and hands results to the main run loop every ten seconds, so the UI never blocks on a history scan. A dedicated venv is recommended because the hook then finds PyObjC automatically (`HEADROOM_DESKTOP_PYTHON` overrides the interpreter). A `flock` on the ledger keeps exactly one icon per ledger.
+
+> **Install the `.app`; do not run `headroom_menubar.py` directly.** A bare interpreter process registers a status item with LaunchServices, but on macOS 26 the item frequently never renders — the process is registered without a bundle identity. The bundle is a thin shell wrapper around the Python source, so edits take effect on the next launch, and `--uninstall` removes it.
+
+Diagnostics land in `~/.headroom/logs/menubar.log`. Check it first if the icon is missing: it records startup, the resolved ledger path, `statusItem.isVisible()`, and every refresh. To start at login, add `headroom.app` in System Settings → General → Login Items.
 
 ## Taskbar tray (Windows)
 
@@ -127,20 +211,24 @@ The adapter posts JSON with the current prompt in `state.body` and a `questions.
 
 | Data | What headroom does |
 | --- | --- |
-| Past Codex conversations | Reads message-type/timestamp metadata to count turns, not historical prompt bodies |
+| Past conversations | Reads message-type/timestamp metadata to count turns, not historical prompt bodies. Agent databases are opened read-only |
 | Current eligible prompt | Passes it in memory to mock scoring or the configured local Laya service |
-| Debit ledger | Stores an opaque event ID, local date, numeric score, and provider—not prompt text |
-| Hook diagnostics | Stores only the latest outcome, time, input-presence/length metadata, and scoring metadata—not prompt text or raw session/turn IDs |
+| Debit ledger | Stores an opaque event ID, local date, numeric score, provider, and agent name—not prompt text |
+| Hook diagnostics | Stores only the latest outcome, time, input-presence/length metadata, agent name, and scoring metadata—not prompt text or raw session/turn IDs |
 | Tray / desktop display | Reads local history metadata and the ledger; the animated card uses an ephemeral loopback-only server and bundled media, with no cloud scoring; saves only position/language/mute |
 | Dashboard | Binds to `127.0.0.1`; images are bundled locally, with no CDN or analytics |
 
-The default shared ledger is `$CODEX_HOME/headroom/ledger.sqlite3` (otherwise `~/.codex/headroom/ledger.sqlite3`). `HEADROOM_STATE_PATH` can override it. Do not publish your runtime state, diagnostics, Codex history, or credentials.
+The default shared ledger is `~/.headroom/ledger.sqlite3`, falling back to an existing `$CODEX_HOME/headroom/ledger.sqlite3` (otherwise `~/.codex/headroom/ledger.sqlite3`) so nobody silently starts at zero. `HEADROOM_STATE_PATH` can override it. Opening a ledger written by headroom 0.x migrates it in place and attributes existing rows to `codex`. Do not publish your runtime state, diagnostics, agent history, or credentials.
+
+A file untouched since before the seven-day window is skipped without being read, which is what keeps a 159 MB history directory from being rescanned on every ten-second refresh.
 
 These guarantees describe **headroom**, not Codex's own data processing. A separately deployed model server may have its own logs or network behavior; configure it accordingly. Any future cloud Jev integration would need explicit opt-in and a separate disclosure of what leaves the device.
 
 ## Which turns count?
 
 The intent is to charge direct human conversation, not unattended work. Known non-interactive sources and plan-mode hooks are rejected. The manual scoring CLI also rejects non-normal modes and unconfirmed origins.
+
+The hook normalizes each agent's payload — `prompt`/`user_prompt`, `session_id`/`sessionId`, `turn_id`/`promptId`, `permission_mode`/`permissionMode` — and sets `HEADROOM_AGENT` explicitly. Codex supplies a `turn_id`; Claude Code and Gemini do not, so headroom allocates a durable per-session sequence from the ledger's `hook_turns` table. Two different prompts in one session charge twice; a redelivered hook for the same turn charges once. A `turn_id` that is present but blank is treated as malformed and skipped.
 
 **Automatic provenance filtering is best-effort.** Current hook payloads do not always identify Goal/automation/subagent provenance reliably. Missing source metadata is accepted for compatibility; `HEADROOM_HOOK_STRICT=1` rejects it, but may also skip ordinary conversation. Do not treat these exclusions as audit-grade guarantees.
 

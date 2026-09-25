@@ -43,7 +43,9 @@ class DesktopTests(unittest.TestCase):
             self.assertFalse(self.state.exists())
             day = datetime.now(budget.SHANGHAI).date()
             with contextlib.closing(budget.open_state(self.state, create=True)) as conn:
-                conn.execute("INSERT INTO debits VALUES (?, ?, ?, ?)", ("fixture", day.isoformat(), 2.5, "fixture"))
+                conn.execute("INSERT INTO debits (event_id, local_day, points, provider) "
+                             "VALUES (?, ?, ?, ?)",
+                             ("fixture", day.isoformat(), 2.5, "fixture"))
                 conn.commit()
             before = self.state.read_bytes()
             for _ in range(3):
@@ -128,9 +130,14 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(spawn.call_count, orb_count)
                 if orb_count:
                     command = spawn.call_args.args[0]
-                    self.assertTrue(command[1].endswith("headroom_desktop.py"))
-                    self.assertEqual(command[command.index("--codex-home")+1], str(self.root))
-                    self.assertEqual(command[command.index("--state-path")+1], str(self.state))
+                    # macOS prefers the installed .app bundle; otherwise a script.
+                    if command[0] == "open":
+                        self.assertTrue(command[1].endswith(".app"))
+                        self.assertEqual(command[command.index("--codex-home")+1], str(self.root))
+                    else:
+                        self.assertTrue(command[1].endswith(hook.display_script()))
+                        self.assertEqual(command[command.index("--codex-home")+1], str(self.root))
+                        self.assertEqual(command[command.index("--state-path")+1], str(self.state))
             spawn.reset_mock()
             web.reset_mock()
             with patch.dict(os.environ, {"HEADROOM_DISABLE_DASHBOARD": "1", "HEADROOM_DISPLAY": "both"}):

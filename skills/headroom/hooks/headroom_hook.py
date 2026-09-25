@@ -1,7 +1,11 @@
-"""Codex lifecycle hook for headroom.
+"""Multi-agent lifecycle hook for headroom.
+
+Codex, Claude Code, Gemini, and WorkBuddy all emit a lifecycle hook payload, but
+with different field names and different levels of detail. This module normalizes
+them into one canonical event, then delegates scoring to ``headroom.py``.
 
 The hook stores no prompt text. It passes prompt text only to the configured
-local scorer and records an opaque hash of session_id + turn_id for idempotence.
+local scorer and records an opaque event id for idempotence.
 """
 
 from __future__ import annotations
@@ -17,9 +21,58 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+#: Field aliases per canonical name. Order matters: first match wins.
+FIELD_ALIASES = {
+    "prompt": ("prompt", "user_prompt", "userPrompt", "message", "text"),
+    "session_id": ("session_id", "sessionId", "conversation_id", "conversationId"),
+    "turn_id": ("turn_id", "turnId", "prompt_id", "promptId", "message_id", "messageId"),
+    "cwd": ("cwd", "working_directory", "workingDirectory"),
+    "permission_mode": ("permission_mode", "permissionMode"),
+    "mode": ("mode",),
+    "source": ("source", "origin"),
+    "transcript": ("transcript_path", "transcriptPath"),
+}
+#: Sources that identify a direct human turn.
+HUMAN_SOURCES = {"interactive", "user", "manual-user"}
+#: Non-interactive modes that must never be charged.
+NON_INTERACTIVE_MODES = {"goal", "task-automation"}
+#: Transcript path markers, used only when HEADROOM_AGENT is not set.
+TRANSCRIPT_MARKERS = (
+    (".claude/", "claude"),
+    (".codebuddy/", "workbuddy"),
+    (".workbuddy-ai/", "workbuddy"),
+    (".gemini/", "antigravity"),
+    (".codex/", "codex"),
+)
+ENV_MARKERS = (
+    ("CLAUDE_CONFIG_DIR", "claude"),
+    ("GEMINI_DIR", "antigravity"),
+    ("WORKBUDDY_HOME", "workbuddy"),
+    ("CODEX_HOME", "codex"),
+)
+
+
 def plugin_root() -> Path:
     configured = os.environ.get("HEADROOM_PLUGIN_ROOT")
     return Path(configured).resolve() if configured else Path(__file__).resolve().parents[1]
+
+
+def scorer_path() -> Path:
+    root = plugin_root()
+    installed = root / "skills" / "headroom" / "scripts" / "headroom.py"
+    return installed if installed.is_file() else root / "scripts" / "headroom.py"
+
+
+def shared_headroom():
+    """The scorer module, for shared path defaults. Never breaks the hook."""
+    try:
+        scripts = str(scorer_path().parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import headroom  # noqa: PLC0415
+        return headroom
+    except Exception:
+        return None
 
 
 def python_background() -> str:
@@ -30,15 +83,82 @@ def python_background() -> str:
     return str(pythonw if pythonw.is_file() else sys.executable)
 
 
+def desktop_python() -> str:
+    """The interpreter that has the display extras.
+
+    A dedicated venv is the supported way to give the tray/menu-bar process
+    PyObjC (macOS) or pystray (Windows) without touching the hook's own
+    interpreter.
+    """
+    configured = os.environ.get("HEADROOM_DESKTOP_PYTHON")
+    if configured:
+        return configured
+    binary = "python.exe" if sys.platform == "win32" else "python"
+    venv = Path.home() / ".headroom" / "venv" / "bin" / binary
+    if venv.is_file():
+        return str(venv)
+    return python_background()
+
+
+def display_script() -> str:
+    """macOS uses a native menu bar item; every other platform a tray window."""
+    return "headroom_menubar.py" if sys.platform == "darwin" else "headroom_desktop.py"
+
+
+def macos_app_bundle() -> Path | None:
+    """The installed ``.app``, when one exists.
+
+    macOS 26 will not reliably render a status item owned by a bare interpreter
+    process, so the bundle is the supported launch path.
+    """
+    candidate = Path.home() / "Applications" / "headroom.app"
+    return candidate if candidate.is_dir() else None
+
+
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 
 
 def state_path(_cwd: str | None) -> Path:
+    """One shared ledger across every agent."""
     configured = os.environ.get("HEADROOM_STATE_PATH")
     if configured:
         return Path(configured)
+    module = shared_headroom()
+    if module is not None:
+        return module.default_state_path()
     return codex_home() / "headroom" / "ledger.sqlite3"
+
+
+def first_string(event: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def detect_agent(event: dict) -> str:
+    """Which agent fired this hook.
+
+    Hook installers set HEADROOM_AGENT explicitly; the rest is a safety net for
+    a hand-written hook definition.
+    """
+    configured = os.environ.get("HEADROOM_AGENT")
+    if configured:
+        return configured
+    if first_string(event, FIELD_ALIASES["turn_id"]):
+        return "codex"
+    transcript = first_string(event, FIELD_ALIASES["transcript"])
+    if transcript:
+        normalized = transcript.replace("\\", "/")
+        for marker, name in TRANSCRIPT_MARKERS:
+            if marker in normalized:
+                return name
+    for variable, name in ENV_MARKERS:
+        if os.environ.get(variable):
+            return name
+    return "unknown"
 
 
 def scoring_backend() -> str:
@@ -66,13 +186,15 @@ def debug_hook_event(event: dict, chargeable: bool, outcome: str = "received",
     )
     if not target:
         return
+    prompt = first_string(event, FIELD_ALIASES["prompt"])
     record = {
         "at": datetime.now(timezone.utc).isoformat(),
         "outcome": outcome,
-        "has_prompt": isinstance(event.get("prompt"), str),
-        "prompt_length": len(event["prompt"]) if isinstance(event.get("prompt"), str) else 0,
-        "has_session_id": isinstance(event.get("session_id"), str) and bool(event["session_id"]),
-        "has_turn_id": isinstance(event.get("turn_id"), str) and bool(event["turn_id"]),
+        "agent": detect_agent(event),
+        "has_prompt": prompt is not None,
+        "prompt_length": len(prompt) if prompt else 0,
+        "has_session_id": first_string(event, FIELD_ALIASES["session_id"]) is not None,
+        "has_turn_id": first_string(event, FIELD_ALIASES["turn_id"]) is not None,
         "chargeable": chargeable,
         **{key: value for key, value in details.items()
            if key in {"returncode", "charged_points", "backend", "provider"}},
@@ -95,12 +217,6 @@ def debug_hook_event(event: dict, chargeable: bool, outcome: str = "received",
                 pass
 
 
-def scorer_path() -> Path:
-    root = plugin_root()
-    installed = root / "skills" / "headroom" / "scripts" / "headroom.py"
-    return installed if installed.is_file() else root / "scripts" / "headroom.py"
-
-
 def dashboard_is_up(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.3):
@@ -117,7 +233,7 @@ def start_dashboard(cwd: str | None) -> None:
     port = int(os.environ.get("HEADROOM_DASHBOARD_PORT", "8766"))
     if dashboard_is_up(port):
         return
-    dashboard = plugin_root() / "scripts" / "headroom_dashboard.py"
+    dashboard = scorer_path().with_name("headroom_dashboard.py")
     command = [python_background(), str(dashboard), "--port", str(port),
                "--codex-home", str(codex_home()),
                "--state-path", str(state_path(cwd))]
@@ -131,40 +247,68 @@ def start_display(cwd: str | None) -> None:
     # Preserve the existing all-display suppression used by lifecycle tests.
     if os.environ.get("HEADROOM_DISABLE_DASHBOARD") == "1":
         return
-    mode = os.environ.get("HEADROOM_DISPLAY", "desktop" if sys.platform == "win32" else "web")
+    default = "desktop" if sys.platform in ("win32", "darwin") else "web"
+    mode = os.environ.get("HEADROOM_DISPLAY", default)
     if mode not in {"desktop", "web", "both", "off"}:
         raise ValueError("HEADROOM_DISPLAY must be desktop, web, both, or off")
     if mode in {"web", "both"}:
         start_dashboard(cwd)
     if mode in {"desktop", "both"} and os.environ.get("HEADROOM_DISABLE_DESKTOP") != "1":
-        command = [python_background(), str(scorer_path().with_name("headroom_desktop.py")),
-                   "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
-        # The desktop process owns a Windows named mutex, so concurrent
-        # SessionStart events cannot leave multiple balls on the desktop.
+        bundle = macos_app_bundle() if sys.platform == "darwin" else None
+        if bundle is not None:
+            # LaunchServices gives the status item a bundle identity to attach to.
+            command = ["open", str(bundle), "--args",
+                       "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
+        else:
+            command = [desktop_python(), str(scorer_path().with_name(display_script())),
+                       "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
+        # The desktop process owns a single-instance lock, so concurrent
+        # SessionStart events cannot leave multiple icons on screen.
         subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
 
 
 def is_chargeable(event: dict) -> bool:
-    if not isinstance(event.get("prompt"), str) or not event["prompt"].strip():
+    if first_string(event, FIELD_ALIASES["prompt"]) is None:
         return False
-    if not isinstance(event.get("session_id"), str) or not event["session_id"]:
+    if first_string(event, FIELD_ALIASES["session_id"]) is None:
         return False
-    if not isinstance(event.get("turn_id"), str) or not event["turn_id"]:
+    # A turn identifier is optional: several agents have no such concept and get
+    # a per-session sequence instead. A *present but blank* one is malformed.
+    for key in FIELD_ALIASES["turn_id"]:
+        if key in event:
+            value = event[key]
+            if not isinstance(value, str) or not value:
+                return False
+            break
+    if first_string(event, FIELD_ALIASES["permission_mode"]) == "plan":
         return False
-    if event.get("permission_mode") == "plan":
+    if first_string(event, FIELD_ALIASES["mode"]) in NON_INTERACTIVE_MODES:
         return False
-    # A future Codex event may expose source/origin. If it does, fail closed
-    # for known non-interactive sources; absent source is treated as the main
-    # UserPromptSubmit event for compatibility with current releases.
-    source = event.get("source", event.get("origin"))
-    if source is not None and (not isinstance(source, str) or
-                              source not in {"interactive", "user", "manual-user"}):
+    # A future payload may expose source/origin. If it does, fail closed for
+    # known non-interactive sources; absent source is accepted for compatibility.
+    source = first_string(event, FIELD_ALIASES["source"])
+    if source is not None and source not in HUMAN_SOURCES:
         return False
     if os.environ.get("HEADROOM_HOOK_STRICT") == "1" and source is None:
         return False
     return True
+
+
+def turn_identity(agent: str, event: dict) -> list[str]:
+    """The scorer arguments that make this turn idempotent.
+
+    Prefer the agent's own turn id. Without one, hand headroom an opaque session
+    key and let it allocate a durable per-session sequence.
+    """
+    session_id = first_string(event, FIELD_ALIASES["session_id"]) or ""
+    turn_id = first_string(event, FIELD_ALIASES["turn_id"])
+    if turn_id:
+        digest = hashlib.sha256(f"{agent}:{session_id}:{turn_id}".encode("utf-8")).hexdigest()
+        return ["--event-id", f"hook-{digest[:40]}"]
+    key = hashlib.sha256(f"{agent}:{session_id}".encode("utf-8")).hexdigest()[:40]
+    return ["--session-key", key]
 
 
 def charge(event: dict) -> None:
@@ -178,21 +322,20 @@ def charge(event: dict) -> None:
     except (OSError, UnicodeError, ValueError, TypeError):
         debug_hook_event(event, True, "invalid_backend_config")
         return
-    digest = hashlib.sha256(
-        f"{event['session_id']}:{event['turn_id']}".encode("utf-8")
-    ).hexdigest()[:40]
+    agent = detect_agent(event)
+    prompt = first_string(event, FIELD_ALIASES["prompt"]) or ""
     # Keep standard input available; CREATE_NO_WINDOW hides console windows.
     executable = Path(sys.executable)
     if executable.name.lower() == "pythonw.exe":
         executable = executable.with_name("python.exe")
-    command = [str(executable), str(scorer_path()), "--codex-home", str(codex_home()),
+    command = [str(executable), str(scorer_path()),
                "--state-path", str(state_path(event.get("cwd"))), "turn",
-               "--event-id", f"hook-{digest}", "--origin", "manual-user",
-               "--mode", "normal", "--backend",
-               backend]
+               *turn_identity(agent, event), "--light",
+               "--origin", "manual-user", "--mode", "normal",
+               "--backend", backend, "--agent", agent]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(command, input=event["prompt"].encode("utf-8"),
+        result = subprocess.run(command, input=prompt.encode("utf-8"),
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=25, check=False, creationflags=creationflags)
         if result.returncode:
@@ -213,7 +356,7 @@ def charge(event: dict) -> None:
 def main() -> int:
     debug_hook_event({}, False, "process_started")
     try:
-        # Codex sends UTF-8 JSON regardless of the Windows ANSI code page.
+        # Agents send UTF-8 JSON regardless of the Windows ANSI code page.
         # json.load(sys.stdin) decodes it as GBK on some Windows installs.
         event = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     except (ValueError, UnicodeError, AttributeError, OSError):

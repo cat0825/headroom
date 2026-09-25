@@ -36,18 +36,10 @@ TEXT = {
 }
 
 
-def read_usage(codex_home: Path, state_path: Path) -> dict:
+def read_usage(codex_home: Path, state_path: Path, adapters=None) -> dict:
     """No HTTP server, scorer, writes, or creation of a missing ledger."""
-    today = datetime.now(headroom.SHANGHAI).date()
-    base = headroom.baseline(codex_home / "thread_history_1.sqlite", today)
-    spent = 0.0
-    if state_path.exists():
-        conn = sqlite3.connect(state_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
-        try:
-            spent = headroom.spent_points(conn, today)
-        finally:
-            conn.close()
-    return headroom.view(base, today, spent)
+    selected = list(adapters) if adapters else [headroom.CodexAdapter(root=codex_home)]
+    return headroom.usage(selected, datetime.now(headroom.SHANGHAI).date(), state_path)
 
 
 def presentation(data: dict | None, lang: str) -> dict:
@@ -191,10 +183,12 @@ def rounded(canvas, x1, y1, x2, y2, radius, **options):
 
 
 class DesktopOrb:
-    def __init__(self, root, codex_home, state_path, settings_path, lang=None, *, visible=True, mode="orb"):
+    def __init__(self, root, codex_home, state_path, settings_path, lang=None, *,
+                 visible=True, mode="orb", adapters=None):
         if mode not in ("tray", "orb"):
             raise ValueError("Display mode must be tray or orb")
         self.root, self.codex_home, self.state_path = root, codex_home, state_path
+        self.adapters = list(adapters) if adapters else None
         self.settings_path, self.visible = settings_path, visible
         self.mode, self.tray, self.tray_anchor = mode, None, None
         self.actions = queue.Queue()
@@ -273,7 +267,7 @@ class DesktopOrb:
         self.busy = True
         def read():
             try:
-                data = read_usage(self.codex_home, self.state_path)
+                data = read_usage(self.codex_home, self.state_path, self.adapters)
             except (OSError, sqlite3.Error, RuntimeError, ValueError, TypeError):
                 data = None
             self.results.put((data, datetime.now().strftime("%H:%M:%S")))
@@ -481,6 +475,10 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     parser.add_argument("--codex-home", type=Path, default=home)
+    parser.add_argument("--agent-home", action="append", metavar="NAME=PATH",
+                        help="override one agent's root; repeatable")
+    parser.add_argument("--agents", default=os.environ.get("HEADROOM_AGENTS", "auto"),
+                        help="'auto' to discover every installed agent, or a comma list")
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--settings-path", type=Path)
     parser.add_argument("--lang", choices=TEXT, default=os.environ.get("HEADROOM_LANG"))
@@ -494,10 +492,12 @@ def parse_args(argv=None):
         parser.error("HEADROOM_LANG must be zh or en")
     if args.mode not in ("tray", "orb"):
         parser.error("HEADROOM_DESKTOP_MODE must be tray or orb")
-    args.state_path = args.state_path or Path(os.environ.get("HEADROOM_STATE_PATH") or args.codex_home / "headroom" / "ledger.sqlite3")
+    args.state_path = args.state_path or headroom.default_state_path()
     args.settings_path = args.settings_path or args.state_path.with_name("desktop.json")
-    protected = {args.state_path.resolve(), (args.codex_home / "thread_history_1.sqlite").resolve(),
-                 (args.codex_home / "headroom" / "config.json").resolve()}
+    protected = {args.state_path.resolve(),
+                 (args.codex_home / "thread_history_1.sqlite").resolve(),
+                 (args.codex_home / "headroom" / "config.json").resolve(),
+                 (Path.home() / ".headroom" / "ledger.sqlite3").resolve()}
     if args.settings_path.resolve() in protected:
         parser.error("--settings-path must not overwrite the ledger, history, or scoring config")
     return args
@@ -505,6 +505,10 @@ def parse_args(argv=None):
 
 def main():
     args = parse_args()
+    try:
+        args.adapters = headroom.select_adapters(args.agents, args.agent_home, args.codex_home)
+    except (headroom.UnknownAgentError, ValueError) as exc:
+        raise SystemExit(str(exc))
     lock = InstanceLock(args.state_path)
     if not lock.acquire():
         return 0
@@ -515,7 +519,8 @@ def main():
             from headroom_webcard import run
             return run(args)
         root = tk.Tk()
-        app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang, mode=args.mode)
+        app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang,
+                         mode=args.mode, adapters=args.adapters)
         app.start()
         if args.show:
             root.after(0, app.toggle)

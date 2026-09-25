@@ -31,7 +31,8 @@ def fixture(root):
         conn.executemany("INSERT INTO thread_items VALUES (?,?)", [("userMessage", budget.day_start_ms(today-timedelta(days=1)))]*10)
         conn.commit()
     with contextlib.closing(budget.open_state(args.state_path, create=True)) as conn:
-        conn.execute("INSERT INTO debits VALUES (?,?,?,?)", ("fixture", today.isoformat(), 2.5, "fixture"))
+        conn.execute("INSERT INTO debits (event_id, local_day, points, provider) "
+                     "VALUES (?,?,?,?)", ("fixture", today.isoformat(), 2.5, "fixture"))
         conn.commit()
     desktop.save_preferences(args.settings_path, 10, 20, "en", True)
     return args
