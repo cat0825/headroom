@@ -1,4 +1,5 @@
-"""Local, read-only headroom Windows tray meter, with an optional desktop orb."""
+"""Local, read-only headroom tray meter (Windows notification area or macOS
+menu bar), with an optional desktop orb."""
 
 from __future__ import annotations
 
@@ -13,10 +14,14 @@ import sqlite3
 import sys
 import tempfile
 import threading
-import tkinter as tk
 from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import tkinter as tk
+except ImportError:  # e.g. Homebrew Python without python-tk
+    tk = None
 
 import headroom
 from headroom_dashboard import ASSET_DIR, TEXT as WEB_TEXT
@@ -25,6 +30,12 @@ from headroom_dashboard import ASSET_DIR, TEXT as WEB_TEXT
 BALL = 64
 CARD_W, CARD_H = 320, 306
 KEY = "#ff00ff"
+# Tk on macOS has no -transparentcolor; it draws "systemTransparent" instead.
+TRANSPARENT = "systemTransparent" if sys.platform == "darwin" else KEY
+if sys.platform == "darwin":
+    UI_FONT, CJK_FONT = "Helvetica Neue", "PingFang SC"
+else:
+    UI_FONT, CJK_FONT = "Segoe UI", "Microsoft YaHei UI"
 INK, BLUE, MUTED = "#14213d", "#2563eb", "#61708c"
 TEXT = {
     "zh": {**WEB_TEXT["zh"], "open": "展开用量", "collapse": "收起",
@@ -115,6 +126,12 @@ def clamp_position(x, y, width, height, area):
             max(top, min(int(y), bottom - height)))
 
 
+def tray_card_top(anchor_y, area):
+    """Above a bottom taskbar; below a top bar such as the macOS menu bar."""
+    top = anchor_y - CARD_H - 12
+    return top if top >= area[1] else anchor_y + 12
+
+
 def card_position(x, y, area):
     top = y - CARD_H - 12
     if top < area[1]:
@@ -122,7 +139,25 @@ def card_position(x, y, area):
     return clamp_position(x + BALL - CARD_W, top, CARD_W, CARD_H, area)
 
 
+def mac_work_area():
+    """Visible frame of the main screen (minus menu bar and Dock), top-left origin."""
+    try:
+        from AppKit import NSScreen
+        # Cocoa's origin is the primary screen's bottom-left corner; Tk's is its top-left.
+        primary = NSScreen.screens()[0].frame()
+        visible = NSScreen.mainScreen().visibleFrame()
+    except Exception:  # pyobjc is optional; pystray pulls it in on macOS.
+        return None
+    left = int(visible.origin.x)
+    top = int(primary.size.height - visible.origin.y - visible.size.height)
+    return left, top, left + int(visible.size.width), top + int(visible.size.height)
+
+
 def work_area(root, x=0, y=0):
+    if sys.platform == "darwin":
+        area = mac_work_area()
+        if area is not None:
+            return area
     if sys.platform == "win32":
         class MonitorInfo(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
@@ -156,15 +191,21 @@ def place_window(window, width, height, x, y):
 
 
 class InstanceLock:
-    """One display per ledger per Windows login session; no open network port."""
+    """One display per ledger per login session; no open network port.
+
+    Windows uses a named mutex. macOS/Linux use an advisory ``flock`` on a
+    per-user file in the temp directory, released by the kernel on exit.
+    """
     def __init__(self, state_path: Path):
         self.handle = None
         digest = hashlib.sha256(os.path.normcase(str(state_path.resolve())).encode()).hexdigest()[:24]
         self.name = "Local\\HeadroomDesktop-" + digest
+        uid = os.getuid() if hasattr(os, "getuid") else "user"
+        self.path = Path(tempfile.gettempdir()) / f"headroom-desktop-{uid}-{digest}.lock"
 
     def acquire(self):
         if sys.platform != "win32":
-            raise RuntimeError("The desktop display currently supports Windows only")
+            return self.acquire_posix()
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
         self.kernel.CreateMutexW.restype = wintypes.HANDLE
@@ -178,10 +219,40 @@ class InstanceLock:
             return False
         return True
 
+    def acquire_posix(self):
+        import fcntl
+        handle = open(self.path, "a+b")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self.handle = handle
+        return True
+
     def close(self):
         if self.handle:
-            self.kernel.CloseHandle(self.handle)
+            if sys.platform == "win32":
+                self.kernel.CloseHandle(self.handle)
+            else:
+                self.handle.close()  # Releases the flock; keep the file to avoid races.
             self.handle = None
+
+
+def flat_button(parent, command, **options):
+    """A colored, borderless button.
+
+    Aqua ``tk.Button`` ignores background colors (white text would vanish on
+    the refresh button), so macOS gets a clickable label with ``invoke()``.
+    """
+    if sys.platform != "darwin":
+        return tk.Button(parent, command=command, **options)
+    for key in ("relief", "bd", "activebackground", "activeforeground"):
+        options.pop(key, None)
+    label = tk.Label(parent, **options)
+    label.invoke = command
+    label.bind("<ButtonRelease-1>", lambda _event: command())
+    return label
 
 
 def rounded(canvas, x1, y1, x2, y2, radius, **options):
@@ -212,33 +283,38 @@ class DesktopOrb:
         self.x, self.y = clamp_position(saved.get("x", area[2]-BALL-24),
                                        saved.get("y", area[3]-BALL-32), BALL, BALL, area)
         self.setup_window(root, "headroom")
-        self.orb = tk.Canvas(root, width=BALL, height=BALL, bg=KEY, highlightthickness=0,
+        self.orb = tk.Canvas(root, width=BALL, height=BALL, bg=TRANSPARENT, highlightthickness=0,
                              cursor="hand2", takefocus=True)
         self.orb.pack()
         self.orb.bind("<ButtonPress-1>", self.on_press)
         self.orb.bind("<B1-Motion>", self.on_drag)
         self.orb.bind("<ButtonRelease-1>", self.on_release)
-        self.orb.bind("<Button-3>", self.show_menu)
+        # Aqua Tk 8.6 reports the right button as Button-2; Control-click too.
+        for sequence in (("<Button-2>", "<Control-Button-1>") if sys.platform == "darwin"
+                         else ("<Button-3>",)):
+            self.orb.bind(sequence, self.show_menu)
         self.orb.bind("<Return>", lambda _event: self.toggle())
         self.orb.bind("<space>", lambda _event: self.toggle())
         root.bind("<Escape>", lambda _event: self.collapse())
         root.protocol("WM_DELETE_WINDOW", self.close)
+        if sys.platform == "darwin":
+            root.createcommand("tk::mac::Quit", self.close)  # Cmd-Q / Dock Quit
         self.panel = tk.Toplevel(root)
         self.setup_window(self.panel, "headroom usage")
         self.panel.bind("<Escape>", lambda _event: self.collapse())
         self.panel.protocol("WM_DELETE_WINDOW", self.collapse)
         self.card = tk.Canvas(self.panel, width=CARD_W, height=CARD_H,
-                              bg=KEY, highlightthickness=0)
+                              bg=TRANSPARENT, highlightthickness=0)
         self.card.pack()
-        self.language_button = tk.Button(self.panel, command=self.switch_language, relief="flat",
-                                        bg="white", fg=MUTED, bd=0, cursor="hand2", font=("Segoe UI", 10))
+        self.language_button = flat_button(self.panel, command=self.switch_language, relief="flat",
+                                        bg="white", fg=MUTED, bd=0, cursor="hand2", font=(UI_FONT, 10))
         self.language_button.place(x=231, y=17, width=34, height=28)
-        self.collapse_button = tk.Button(self.panel, text="−", command=self.collapse, relief="flat",
-                                       bg="white", fg=MUTED, bd=0, cursor="hand2", font=("Segoe UI", 17))
+        self.collapse_button = flat_button(self.panel, text="−", command=self.collapse, relief="flat",
+                                       bg="white", fg=MUTED, bd=0, cursor="hand2", font=(UI_FONT, 17))
         self.collapse_button.place(x=271, y=15, width=28, height=30)
-        self.refresh_button = tk.Button(self.panel, command=self.request_refresh, relief="flat",
+        self.refresh_button = flat_button(self.panel, command=self.request_refresh, relief="flat",
                                       bg=INK, fg="white", activebackground="#263b61", activeforeground="white",
-                                      bd=0, cursor="hand2", font=("Segoe UI", 11))
+                                      bd=0, cursor="hand2", font=(UI_FONT, 11))
         self.refresh_button.place(x=32, y=251, width=256, height=32)
         self.paint()
         if visible and mode == "orb":
@@ -253,10 +329,12 @@ class DesktopOrb:
         window.title(title)
         window.overrideredirect(True)
         window.attributes("-topmost", True)
-        window.configure(bg=KEY)
+        window.configure(bg=TRANSPARENT)
         if sys.platform == "win32":
             window.attributes("-transparentcolor", KEY)
             window.attributes("-toolwindow", True)
+        elif sys.platform == "darwin":
+            window.attributes("-transparent", True)
 
     def start(self):
         if self.mode == "tray":
@@ -352,30 +430,30 @@ class DesktopOrb:
             else:
                 self.orb.create_arc(6, 6, 58, 58, start=90, extent=-3.6*view["percent"],
                                     style="arc", outline="#58c7ab" if view["percent"] >= 70 else view["color"], width=3)
-        self.orb.create_text(32, 27, text=view["orb"], fill="white", font=("Segoe UI", 16, "bold"))
-        self.orb.create_text(32, 44, text="%", fill="#adc2e7", font=("Segoe UI", 9))
+        self.orb.create_text(32, 27, text=view["orb"], fill="white", font=(UI_FONT, 16, "bold"))
+        self.orb.create_text(32, 44, text="%", fill="#adc2e7", font=(UI_FONT, 9))
         self.card.delete("all")
         rounded(self.card, 1, 1, CARD_W-1, CARD_H-1, 18, fill="white", outline="#dce4ef")
-        self.card.create_text(24, 31, anchor="w", text=labels["heading"], fill=INK, font=("Microsoft YaHei UI", 14, "bold"))
-        self.card.create_text(24, 99, anchor="w", text=view["value"], fill=view["color"], font=("Segoe UI", 34, "bold"))
-        self.card.create_text(26, 137, anchor="w", text="left", fill=MUTED, font=("Segoe UI", 10))
+        self.card.create_text(24, 31, anchor="w", text=labels["heading"], fill=INK, font=(CJK_FONT, 14, "bold"))
+        self.card.create_text(24, 99, anchor="w", text=view["value"], fill=view["color"], font=(UI_FONT, 34, "bold"))
+        self.card.create_text(26, 137, anchor="w", text="left", fill=MUTED, font=(UI_FONT, 10))
         if view["image"]:
             picture = self.mood_image(view["image"])
             if picture:
                 self.card.create_image(268, 101, image=picture)
             else:
                 self.card.create_text(267, 101, text=":)" if view["percent"] >= 70 else ":(" if view["percent"] >= 30 else ":O",
-                                      fill=view["color"], font=("Segoe UI", 24, "bold"))
+                                      fill=view["color"], font=(UI_FONT, 24, "bold"))
         self.card.create_line(28, 169, 292, 169, width=8, fill="#e8edf6", capstyle="round")
         if view["percent"]:
             self.card.create_line(28, 169, 28+264*view["percent"]/100, 169,
                                   width=8, fill=view["color"], capstyle="round")
         meta = labels["loading"] if self.data is None and not self.failed else view["meta"]
         self.card.create_text(24, 199, anchor="w", text=meta, fill=INK if not self.failed else "#b42318",
-                              font=("Microsoft YaHei UI", 10), tags="usage")
+                              font=(CJK_FONT, 10), tags="usage")
         if self.updated and not self.failed:
             self.card.create_text(24, 224, anchor="w", text=labels["updated"]+self.updated,
-                                  fill=MUTED, font=("Microsoft YaHei UI", 9))
+                                  fill=MUTED, font=(CJK_FONT, 9))
         rounded(self.card, 24, 245, 296, 289, 10, fill=INK, outline="")
         self.language_button.configure(text=labels["switch"])
         self.refresh_button.configure(text=labels["refresh"])
@@ -386,7 +464,7 @@ class DesktopOrb:
             if self.expanded:
                 ax, ay = self.tray_anchor or (self.x, self.y)
                 area = work_area(self.root, ax, ay)
-                x, y = clamp_position(ax-CARD_W, ay-CARD_H-12, CARD_W, CARD_H, area)
+                x, y = clamp_position(ax-CARD_W, tray_card_top(ay, area), CARD_W, CARD_H, area)
                 place_window(self.panel, CARD_W, CARD_H, x, y)
             return
         area = work_area(self.root, self.x+BALL//2, self.y+BALL//2)
@@ -486,8 +564,10 @@ def parse_args(argv=None):
     parser.add_argument("--lang", choices=TEXT, default=os.environ.get("HEADROOM_LANG"))
     parser.add_argument("--mode", choices=("tray", "orb"),
                         default=os.environ.get("HEADROOM_DESKTOP_MODE", "tray"))
-    parser.add_argument("--renderer", choices=("webview", "tk"), default="webview",
-                        help="tray card renderer; tk is a static, low-dependency fallback")
+    parser.add_argument("--renderer", choices=("webview", "tk"),
+                        default="webview" if sys.platform == "win32" else "tk",
+                        help="tray card renderer; tk is a static, low-dependency fallback "
+                             "(the WebView2 card is Windows-only)")
     parser.add_argument("--show", action="store_true", help="expand the card on startup")
     args = parser.parse_args(argv)
     if args.lang is not None and args.lang not in TEXT:
@@ -503,29 +583,78 @@ def parse_args(argv=None):
     return args
 
 
+def dashboard_command(args, lang=None):
+    dashboard = Path(__file__).resolve().with_name("headroom_dashboard.py")
+    command = [sys.executable, str(dashboard), "--codex-home", str(args.codex_home),
+               "--state-path", str(args.state_path)]
+    return command + ["--lang", lang] if lang else command
+
+
+def fall_back_to_web(args, reason, port=8766):
+    """Non-Windows only: replace this process with the loopback web dashboard."""
+    lang = args.lang or read_preferences(args.settings_path).get("lang")
+    url = f"http://127.0.0.1:{port}/" + (f"?lang={lang}" if lang else "")
+    print(f"headroom: {reason}\nheadroom: using the web dashboard instead: {url}",
+          file=sys.stderr, flush=True)
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            running = True
+    except OSError:
+        running = False
+    if args.show:
+        import webbrowser
+        webbrowser.open(url)
+    if running:
+        return 0
+    command = dashboard_command(args, lang)
+    os.execv(command[0], command)
+
+
 def main():
     args = parse_args()
+    if sys.platform != "win32" and args.mode == "tray" and args.renderer == "webview":
+        print("headroom: the animated WebView2 tray card is Windows-only; using the static "
+              "Tk card (clips still play in the web dashboard).", file=sys.stderr)
+        args.renderer = "tk"
     lock = InstanceLock(args.state_path)
     if not lock.acquire():
         return 0
+    if tk is None:
+        lock.close()
+        if sys.platform == "win32":
+            raise RuntimeError("The desktop display needs Python with Tk")
+        return fall_back_to_web(args, "the desktop display needs Python with Tk "
+                                      "(for Homebrew: brew install python-tk)")
     app = None
     root = None
+    fallback = None
     try:
         if args.mode == "tray" and args.renderer == "webview":
             from headroom_webcard import run
             return run(args)
-        root = tk.Tk()
-        app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path, args.lang, mode=args.mode)
-        app.start()
-        if args.show:
-            root.after(0, app.toggle)
-        root.mainloop()
+        try:
+            root = tk.Tk()
+            app = DesktopOrb(root, args.codex_home, args.state_path, args.settings_path,
+                             args.lang, mode=args.mode)
+            app.start()
+        except (RuntimeError, tk.TclError) as exc:
+            # Windows keeps its original behavior; elsewhere degrade to the browser UI.
+            if sys.platform == "win32":
+                raise
+            fallback = str(exc)
+        if fallback is None:
+            if args.show:
+                root.after(0, app.toggle)
+            root.mainloop()
     finally:
         if app is not None:
             app.close()
         elif root is not None:
             root.destroy()
         lock.close()
+    if fallback is not None:
+        return fall_back_to_web(args, fallback)
     return 0
 
 

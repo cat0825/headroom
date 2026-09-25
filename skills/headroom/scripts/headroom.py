@@ -215,10 +215,11 @@ def score_event(base: dict, as_of: date, state_path: Path, event_id: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
+    # Match the hook and dashboard: honor CODEX_HOME for history and ledger.
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    parser.add_argument("--codex-home", type=Path, default=codex_home)
     default_state = Path(os.environ.get(
-        "HEADROOM_STATE_PATH",
-        str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "headroom" / "ledger.sqlite3"),
+        "HEADROOM_STATE_PATH", str(codex_home / "headroom" / "ledger.sqlite3"),
     ))
     parser.add_argument("--state-path", type=Path, default=default_state)
     parser.add_argument("--as-of", type=date.fromisoformat,

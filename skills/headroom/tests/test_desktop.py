@@ -97,7 +97,8 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(desktop.parse_args(["--lang", "zh"]).lang, "zh")
             self.assertEqual(args.settings_path, self.settings)
             self.assertEqual(args.mode, "tray")
-            self.assertEqual(args.renderer, "webview")
+            # The animated WebView2 card is Windows-only; elsewhere default to Tk.
+            self.assertEqual(args.renderer, "webview" if sys.platform == "win32" else "tk")
             self.assertEqual(desktop.parse_args(["--renderer", "tk"]).renderer, "tk")
             self.assertEqual(desktop.parse_args(["--mode", "orb"]).mode, "orb")
         with patch.dict(os.environ, {"HEADROOM_DESKTOP_MODE": "orb"}):
@@ -141,7 +142,6 @@ class DesktopTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     hook.start_display(None)
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows single-instance mutex")
     def test_single_instance_released_and_duplicate_cli_exits(self):
         first, second = desktop.InstanceLock(self.state), desktop.InstanceLock(self.state)
         try:
@@ -157,7 +157,7 @@ class DesktopTests(unittest.TestCase):
             second.close()
         self.assertFalse(self.state.exists())
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows Tk widget integration")
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "Windows/macOS Tk widget integration")
     def test_tray_keeps_orb_hidden_and_dispatches_on_tk_thread(self):
         root = desktop.tk.Tk()
         app = desktop.DesktopOrb(root, self.root, self.state, self.settings, "en", visible=False, mode="tray")
@@ -192,7 +192,7 @@ class DesktopTests(unittest.TestCase):
             tray.close.assert_called_once()
         self.assertFalse(self.state.exists())
 
-    @unittest.skipUnless(sys.platform == "win32" and os.environ.get("HEADROOM_TEST_NATIVE_TRAY") == "1",
+    @unittest.skipUnless(sys.platform in ("win32", "darwin") and os.environ.get("HEADROOM_TEST_NATIVE_TRAY") == "1",
                          "opt-in smoke briefly opens a real tray icon and usage card")
     def test_native_tray_and_popup_lifecycle(self):
         root = desktop.tk.Tk()
@@ -205,7 +205,10 @@ class DesktopTests(unittest.TestCase):
             time.sleep(.01)
         self.assertIsNotNone(app.data)
         self.assertTrue(app.tray.icon.visible)
-        self.assertTrue(app.tray.thread.is_alive())
+        # macOS runs the status item on Tk's main-thread loop, not a tray thread.
+        native_thread = sys.platform == "win32"
+        if native_thread:
+            self.assertTrue(app.tray.thread.is_alive())
         self.assertEqual(app.tray.icon.title, "headroom · 100.00% left")
         self.assertEqual(root.state(), "withdrawn")
         # Exercise the application's own callback, not OS input automation.
@@ -221,10 +224,13 @@ class DesktopTests(unittest.TestCase):
         list(app.tray.icon.menu)[-1](app.tray.icon)
         app.drain_actions()
         self.assertTrue(app.closed)
-        self.assertFalse(app.tray.thread.is_alive())
+        if native_thread:
+            self.assertFalse(app.tray.thread.is_alive())
+        else:
+            self.assertFalse(app.tray.icon.visible)
         self.assertFalse(self.state.exists())
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows Tk widget integration")
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "Windows/macOS Tk widget integration")
     def test_widgets_toggle_drag_language_refresh_and_close(self):
         root = desktop.tk.Tk()
         app = desktop.DesktopOrb(root, self.root, self.state, self.settings, "zh", visible=False)

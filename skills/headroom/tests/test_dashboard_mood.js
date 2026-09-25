@@ -4,7 +4,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {spawnSync} = require('node:child_process');
 
-const result = spawnSync(process.env.HEADROOM_TEST_PYTHON || 'python', ['-c',
+// macOS and many Linux distributions ship only `python3`.
+const python = process.env.HEADROOM_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const result = spawnSync(python, ['-c',
   'import json,sys; sys.path.insert(0,sys.argv[1]); import headroom_dashboard as d; print(json.dumps({k+str(t):d.render_page(k,desktop=t) for k in d.TEXT for t in (False,True)}))',
   path.join(__dirname, '../scripts')], {encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}});
 assert.equal(result.status, 0, result.stderr || String(result.error));

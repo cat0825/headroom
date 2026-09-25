@@ -109,6 +109,19 @@ def dashboard_is_up(port: int) -> bool:
         return False
 
 
+def spawn_detached(command: list[str], cwd: str | None) -> None:
+    """Start a display that outlives this short-lived hook process.
+
+    Windows hides the console window. On macOS/Linux a new session keeps the
+    display out of Codex's process group and terminal (no SIGHUP/SIGINT).
+    """
+    options = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+               if sys.platform == "win32" else {"start_new_session": True})
+    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, **options)
+
+
 def start_dashboard(cwd: str | None) -> None:
     # Lifecycle smoke tests must not leave a production-port server pointing
     # at a temporary ledger that disappears when the test finishes.
@@ -121,10 +134,7 @@ def start_dashboard(cwd: str | None) -> None:
     command = [python_background(), str(dashboard), "--port", str(port),
                "--codex-home", str(codex_home()),
                "--state-path", str(state_path(cwd))]
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=creationflags, close_fds=True)
+    spawn_detached(command, cwd)
 
 
 def start_display(cwd: str | None) -> None:
@@ -139,11 +149,10 @@ def start_display(cwd: str | None) -> None:
     if mode in {"desktop", "both"} and os.environ.get("HEADROOM_DISABLE_DESKTOP") != "1":
         command = [python_background(), str(scorer_path().with_name("headroom_desktop.py")),
                    "--codex-home", str(codex_home()), "--state-path", str(state_path(cwd))]
-        # The desktop process owns a Windows named mutex, so concurrent
-        # SessionStart events cannot leave multiple balls on the desktop.
-        subprocess.Popen(command, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
+        # The desktop process owns a per-ledger lock (a Windows named mutex,
+        # or flock elsewhere), so concurrent SessionStart events cannot leave
+        # multiple displays on the desktop.
+        spawn_detached(command, cwd)
 
 
 def is_chargeable(event: dict) -> bool:
