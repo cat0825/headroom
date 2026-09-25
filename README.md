@@ -62,25 +62,25 @@ Review and trust headroom's **SessionStart** and **UserPromptSubmit** definition
 
 To expose `$headroom` as a Codex skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into your Codex skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
 
-### macOS / Linux (manual)
+### macOS / Linux
 
-There is no installer for macOS or Linux yet, and the tray display is Windows-only. The read-only status command and the web dashboard use only the standard library, so they run with `python3`:
+You need Python 3.10+ (macOS's built-in `/usr/bin/python3` may be older; use python.org or `brew install python`). Status and the web dashboard use only the standard library:
 
 ```bash
 python3 skills/headroom/scripts/headroom.py status
 python3 skills/headroom/scripts/headroom_dashboard.py --lang en
 ```
 
-`headroom.py` reads the Codex history from `~/.codex` by default; if you use a custom `CODEX_HOME`, also pass `--codex-home "$CODEX_HOME"`.
-
-The hook template's `command` entries already call `python3`. To enable automatic debits, do by hand what the Windows installer does: replace `__PLUGIN_ROOT__` with the absolute path of `skills/headroom` and save the result as `hooks.json` in your Codex home. From the repository root, this writes the file only if it does not exist yet (otherwise merge the two definitions yourself):
+To enable automatic debits, review and run the installer from the repository root. It merges headroom's two hooks into `${CODEX_HOME:-~/.codex}/hooks.json` without touching your other hooks, backs up a changed file, and is safe to re-run. The hooks call the Python that ran the installer (choose one with `PYTHON=/path/to/python3`), with no PowerShell:
 
 ```bash
-mkdir -p "${CODEX_HOME:-$HOME/.codex}"
-test -e "${CODEX_HOME:-$HOME/.codex}/hooks.json" || sed "s#__PLUGIN_ROOT__#$PWD/skills/headroom#g" skills/headroom/hooks/hooks.json.template > "${CODEX_HOME:-$HOME/.codex}/hooks.json"
+sh skills/headroom/hooks/install.sh --dry-run   # preview
+sh skills/headroom/hooks/install.sh             # add --link-skill to expose $headroom via ~/.agents/skills
 ```
 
-Then review and trust the two definitions in Codex `/hooks` as above. On these platforms `SessionStart` opens the web dashboard.
+Then review and trust the two definitions in Codex `/hooks` as above. `SessionStart` starts the web dashboard (open [the dashboard](http://127.0.0.1:8766/?lang=en)). `sh skills/headroom/hooks/install.sh --uninstall` removes only headroom's hooks and keeps your ledger.
+
+**macOS menu bar (optional).** Install `requirements-desktop.txt` into that Python, then run `python3 skills/headroom/scripts/headroom_desktop.py --lang en`. An H icon appears in the menu bar; click it and choose **Show usage** for the static card, or use `--mode orb` for the floating orb. The animated WebView2 card is Windows-only, so clips play in the web dashboard. Python must include Tk (Homebrew: `brew install python-tk`); if Tk or the tray packages are missing, headroom falls back to the web dashboard. To have `SessionStart` open the menu bar display, re-run the installer with `--display desktop`. Nothing is added to login items.
 
 <a id="desktop-orb-windows"></a>
 
