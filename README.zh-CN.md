@@ -170,3 +170,5 @@ JavaScript 测试需要 Node.js 和 Python，可用 `HEADROOM_TEST_PYTHON` 指�
 - [TOGET-H](https://github.com/TOGET-H)
 - [cat0825](https://github.com/cat0825)
 - [fuxiuht](https://github.com/fuxiuht)
+
+欢迎参与贡献，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
