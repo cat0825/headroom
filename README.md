@@ -62,6 +62,26 @@ Review and trust headroom's **SessionStart** and **UserPromptSubmit** definition
 
 To expose `$headroom` as a Codex skill, install the repository through your local plugin marketplace, or copy `skills/headroom` into your Codex skills directory. Installing a skill/plugin alone does not activate or trust lifecycle hooks. Keep the hook's source directory in place.
 
+### macOS / Linux (manual)
+
+There is no installer for macOS or Linux yet, and the tray display is Windows-only. The read-only status command and the web dashboard use only the standard library, so they run with `python3`:
+
+```bash
+python3 skills/headroom/scripts/headroom.py status
+python3 skills/headroom/scripts/headroom_dashboard.py --lang en
+```
+
+`headroom.py` reads the Codex history from `~/.codex` by default; if you use a custom `CODEX_HOME`, also pass `--codex-home "$CODEX_HOME"`.
+
+The hook template's `command` entries already call `python3`. To enable automatic debits, do by hand what the Windows installer does: replace `__PLUGIN_ROOT__` with the absolute path of `skills/headroom` and save the result as `hooks.json` in your Codex home. From the repository root, this writes the file only if it does not exist yet (otherwise merge the two definitions yourself):
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}"
+test -e "${CODEX_HOME:-$HOME/.codex}/hooks.json" || sed "s#__PLUGIN_ROOT__#$PWD/skills/headroom#g" skills/headroom/hooks/hooks.json.template > "${CODEX_HOME:-$HOME/.codex}/hooks.json"
+```
+
+Then review and trust the two definitions in Codex `/hooks` as above. On these platforms `SessionStart` opens the web dashboard.
+
 <a id="desktop-orb-windows"></a>
 
 ## Taskbar tray (Windows)
