@@ -141,13 +141,7 @@ sh skills/headroom/hooks/install.sh             # 加 --link-skill 可通过 ~/.
 
 ## 菜单栏（macOS）
 
-```bash
-python3 -m venv ~/.headroom/venv
-~/.headroom/venv/bin/pip install -r skills/headroom/requirements-desktop.txt
-python3 skills/headroom/hooks/install_macos_app.py
-```
-
-会构建 `~/Applications/headroom.app` 并启动。系统状态栏显示剩余百分比，低于 30% 变红。点击展开用量卡片：
+菜单栏图标就是 Windows 托盘用的那套卡片，走 pystray 的 macOS 后端。点击 H 图标展开用量卡片：
 
 ```text
 脑力剩余 48.57%
@@ -162,11 +156,11 @@ python3 skills/headroom/hooks/install_macos_app.py
 退出 headroom
 ```
 
-这是基于 PyObjC 的原生 `NSStatusItem` —— 没有 Tk 窗口、没有 Dock 图标、不占浏览器标签页。读取跑在后台线程，每十秒把结果交给主 run loop，所以历史扫描永远不会卡住界面。建议装在独立 venv 里，钩子会自动找到它（`HEADROOM_DESKTOP_PYTHON` 可覆盖解释器）。账本上的 `flock` 保证每份账本只有一个图标。
+**有一个实现细节是关键的。** pystray 的 macOS 后端必须在主线程运行，所以 `headroom_desktop.py` 让 **Tk 拥有主线程的 Aqua 事件循环**，再用 `pystray.Icon.run_detached()` 把状态项挂上去。**不要**换成裸的 `NSApplication.sharedApplication()` + `app.run()` —— 那样创建的 `NSStatusItem` 会报告 `isVisible() == True`、有窗口、通过所有程序化检查，但 **macOS 从不渲染它，而且任何地方都不报错**。Tk 会正确初始化 `NSApplication`，这就是缺的那一环。
 
-> **要装 `.app`，不要直接跑 `headroom_menubar.py`。** 裸解释器进程虽然能向 LaunchServices 注册状态项，但在 macOS 26 上图标经常**不会渲染** —— 进程没有 bundle 身份。`.app` 里只是一层 shell 包装，改 Python 源码下次启动就生效；`--uninstall` 可移除。
+建议装在独立 venv 里，钩子会自动找到它（`HEADROOM_DESKTOP_PYTHON` 可覆盖解释器）。账本上的 `flock` 保证每份账本只有一个图标。
 
-诊断日志在 `~/.headroom/logs/menubar.log`。图标不见了先看它：里面记录了启动、解析到的账本路径、`statusItem.isVisible()` 和每次刷新。要开机自启，在「系统设置 → 通用 → 登录项」里加上 `headroom.app`。
+**排障。** 图标不见了，先看你的菜单栏管理工具的**隐藏区** —— Thaw/Ice 默认把新图标收进去，并显示成通用名字（`python:Item-0`）。这类工具没有 CLI，只能在它自己的面板里拖。**不要相信 `NSStatusItem` 的几何或窗口坐标**：macOS 26 上同一个 item 一会儿报 `height=0` 一会儿报 `33`，连可见的时钟都报 `y=-33`。另外分离启动的 venv 进程可能丢失 Tcl 而报 `Cannot find a usable init.tcl`，`ensure_tcl_library()` 已处理。不会添加任何登录项。
 
 ## 任务栏托盘（Windows）
 

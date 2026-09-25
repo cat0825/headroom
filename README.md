@@ -141,13 +141,7 @@ Then review and trust the two definitions in Codex `/hooks` as above. `SessionSt
 
 ## Menu bar (macOS)
 
-```bash
-python3 -m venv ~/.headroom/venv
-~/.headroom/venv/bin/pip install -r skills/headroom/requirements-desktop.txt
-python3 skills/headroom/hooks/install_macos_app.py
-```
-
-That builds `~/Applications/headroom.app` and launches it. A native status bar item shows the percent left; it turns red below 30%. Clicking it drops a usage card:
+The menu bar icon is the same tray card the Windows notification area uses, running through pystray's macOS backend. Clicking the H icon drops a usage card:
 
 ```text
 脑力剩余 48.57%
@@ -162,11 +156,11 @@ That builds `~/Applications/headroom.app` and launches it. A native status bar i
 退出 headroom
 ```
 
-It is a real `NSStatusItem` built on PyObjC — no Tk window, no Dock icon, no browser tab. The reader runs on a worker thread and hands results to the main run loop every ten seconds, so the UI never blocks on a history scan. A dedicated venv is recommended because the hook then finds PyObjC automatically (`HEADROOM_DESKTOP_PYTHON` overrides the interpreter). A `flock` on the ledger keeps exactly one icon per ledger.
+**One implementation detail is load-bearing.** pystray's macOS backend must run on the main thread, so `headroom_desktop.py` lets **Tk own the main-thread Aqua event loop** and attaches the status item to it with `pystray.Icon.run_detached()`. Do not replace this with a raw `NSApplication.sharedApplication()` + `app.run()`: that creates an `NSStatusItem` which reports `isVisible() == True`, has a window, and passes every programmatic check — yet macOS never renders it, and nothing anywhere reports an error. Tk initialises `NSApplication` properly, and that is the missing piece.
 
-> **Install the `.app`; do not run `headroom_menubar.py` directly.** A bare interpreter process registers a status item with LaunchServices, but on macOS 26 the item frequently never renders — the process is registered without a bundle identity. The bundle is a thin shell wrapper around the Python source, so edits take effect on the next launch, and `--uninstall` removes it.
+A dedicated venv is recommended because the hook then finds the interpreter automatically (`HEADROOM_DESKTOP_PYTHON` overrides it). A `flock` on the ledger keeps exactly one icon per ledger.
 
-Diagnostics land in `~/.headroom/logs/menubar.log`. Check it first if the icon is missing: it records startup, the resolved ledger path, `statusItem.isVisible()`, and every refresh. To start at login, add `headroom.app` in System Settings → General → Login Items.
+**Troubleshooting.** If the icon is missing, look in your menu bar manager's hidden section first — Thaw/Ice park new items there by default and show them under a generic name (`python:Item-0`). Managers expose no CLI for this, so drag the item in the manager's own panel. Do not trust `NSStatusItem` geometry or window coordinates on macOS 26: the same item reports `height=0` and `height=33` on different runs, and even the visible clock reports `y=-33`. A detached venv process can also lose Tcl and die with `Cannot find a usable init.tcl`; `ensure_tcl_library()` handles that. Nothing is added to login items.
 
 ## Taskbar tray (Windows)
 

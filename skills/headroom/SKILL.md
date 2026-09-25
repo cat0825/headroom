@@ -58,33 +58,24 @@ Two independent halves:
 ```text
 python3 -m venv ~/.headroom/venv
 ~/.headroom/venv/bin/pip install -r requirements-desktop.txt
-python3 hooks/install_macos_app.py          # builds ~/Applications/headroom.app and launches it
-python3 hooks/install_macos_app.py --uninstall
+~/.headroom/venv/bin/python scripts/headroom_desktop.py --lang en
 ```
 
-**Install it as a `.app`, do not run `scripts/headroom_menubar.py` directly.** A bare interpreter process registers a status item with LaunchServices but on macOS 26 the item frequently never renders — the process is registered without a bundle identity. Wrapping the same code in a minimal bundle (`LSUIElement=true`, `NSAppSleepDisabled=true`) gives the menu bar a real application to attach to. The bundle is a thin shell wrapper around the Python source, so edits take effect on the next launch.
+`requirements-desktop.txt` is the whole dependency list: pystray, Pillow, and (on macOS) PyObjC. A dedicated venv is the supported setup because `headroom_hook.desktop_python()` then finds it automatically; `HEADROOM_DESKTOP_PYTHON` overrides the interpreter.
 
-Diagnostics go to `~/.headroom/logs/menubar.log` (`--log`, or `HEADROOM_MENUBAR_LOG`). Check it first if the icon is missing: it records startup, the resolved ledger path, `statusItem.isVisible()`, the status item's geometry, and every refresh.
+**How the macOS status item works, and the one way to get it wrong.** pystray's macOS backend must run on the main thread, so `headroom_desktop.py` lets **Tk own the main-thread Aqua event loop** and attaches the status item to it with `pystray.Icon.run_detached()`. Do not replace this with a raw `NSApplication.sharedApplication()` + `app.run()`: that creates an `NSStatusItem` which reports `isVisible() == True` and looks correct in every programmatic check, but macOS never renders it and no error appears anywhere. Tk initialises `NSApplication` properly, which is the missing piece.
+
+If Tk is missing (`brew install python-tk`), or the tray packages are absent or fail to start, macOS and Linux fall back to the loopback web dashboard and print why. The animated WebView2 card stays Windows-only; `--renderer` defaults to `tk` elsewhere.
 
 ### When the icon never appears
 
-Two independent causes, and the first one is silent — no error anywhere.
+**A menu bar manager is the usual cause.** Thaw/Ice keep a **hidden section** and implement it by moving items off-screen with the Accessibility API — every new item lands there by default, and the manager shows it under a generic name until it learns the app's label (headroom appears as `python:Item-0`). Look in the manager's hidden section first, and fix it there rather than in headroom. Managers expose no CLI for this; the user drags the item in the manager's own panel.
 
-**1. The interpreter is not inside the bundle.** `NSBundle.mainBundle()` resolves from the *main executable's* path. If the launcher is a shell script that `exec`s an interpreter living outside the bundle, the process ends up with `bundleIdentifier() == None` and macOS never assigns it a menu bar slot. `install_macos_app.py` avoids this by copying the interpreter into `Contents/MacOS/python` and pointing the launcher at that copy. Verify with:
+Only after ruling that out, consider capacity. `NSScreen.auxiliaryTopRightArea()` is the strip status items share — about 664 points on a notched 14" MacBook. Free a slot and the item appears; Command-drag it afterwards.
 
-```text
-lsappinfo list | grep -A3 '"headroom"'
-```
+**Do not trust `NSStatusItem` geometry, and do not trust `x`/`y` from the window server.** On macOS 26 status items use a virtual coordinate space: the same item reports `height=0` and `height=33` on different runs, `x` anywhere from `-4798` to `350`, and even the visible clock reports `y=-33`. `isVisible()` is always `True`. The only trustworthy signals are (a) whether a menu bar manager lists the item, and (b) the summed width of the `kCGWindowLayer == 25` windows, which is a real capacity measure. Never "self-heal" by toggling `isVisible` or rebuilding the item on a schedule — the probe never reads as "placed", so the retry fires forever and keeps the item from settling.
 
-`executable path=` must point inside `headroom.app/Contents/MacOS/`. If it points at a venv or system interpreter, that is the bug.
-
-**2. A menu bar manager is hiding it, or the strip is full.** Managers are the far more common cause. Thaw/Ice keep a **hidden section** and implement it by moving items off-screen with the Accessibility API — every new item lands there by default, and the manager will show it under a generic name until it learns the app's label. If a manager is running, look for the item in its hidden section first and fix it there, not in headroom. Managers generally expose no CLI for this; the user has to drag the item in the manager's own panel.
-
-Only after ruling that out, consider capacity. `NSScreen.auxiliaryTopRightArea()` is the strip status items share — about 664 points on a notched 14" MacBook. Free a slot and the item appears; Command-drag it afterwards (`autosaveName` remembers where).
-
-**The only reliable way to see what is actually on the menu bar** is `Quartz.CGWindowListCopyWindowInfo` filtered to `kCGWindowLayer == 25`, checking whether `kCGWindowBounds.X` falls inside the screen. It needs `pyobjc-framework-Quartz` but no special permission. On macOS 26 every status item is hosted by Control Center, so `kCGWindowOwnerName` is always "控制中心" — identify your own item by measuring the delta across a start/stop, not by name.
-
-**Do not trust `NSStatusItem` geometry.** On macOS 26 `NSSceneStatusItem` uses virtual coordinates: the same item reports `height=0` and `height=33` on different runs, `x` anywhere from `-4798` to `350`, and `isVisible()` is always `True`. And do **not** try to self-heal by toggling `isVisible` or rebuilding the item on a schedule — because the probe never reads as "placed", the retry fires forever and keeps the item from settling, making things worse.
+**A detached venv process can lose Tcl.** `headroom_desktop.ensure_tcl_library()` sets `TCL_LIBRARY`/`TK_LIBRARY` from `sys.base_prefix` at import time. Without it, a process started with `start_new_session` dies with `Cannot find a usable init.tcl`, which reads as a missing Tk but is a search-path problem.
 
 The hook finds the venv automatically (`HEADROOM_DESKTOP_PYTHON` overrides it). On Windows the equivalent is the taskbar tray card, `pythonw scripts/headroom_desktop.py`. On macOS, add `headroom.app` to System Settings → General → Login Items to start it at login.
 
