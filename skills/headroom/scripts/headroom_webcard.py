@@ -93,7 +93,8 @@ class WebCard:
 
     def refresh(self):
         try:
-            self.data = read_usage(self.args.codex_home, self.args.state_path)
+            self.data = read_usage(self.args.codex_home, self.args.state_path,
+                                   getattr(self.args, "adapters", None))
         except Exception:
             self.data = None
         self.update_tray()
@@ -179,7 +180,8 @@ class WebCard:
 
     def setup(self, webview):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(
-            self.args.codex_home, self.args.state_path, self.lang, desktop=True))
+            self.args.codex_home, self.args.state_path, self.lang, desktop=True,
+            adapters=getattr(self.args, "adapters", None)))
         self.server.daemon_threads = True
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True,
                                               name="headroom-card-http")
