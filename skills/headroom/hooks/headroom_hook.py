@@ -1,7 +1,12 @@
-"""Codex lifecycle hook for headroom.
+"""Multi-agent lifecycle hook for headroom.
+
+Codex, Claude Code, Gemini, and WorkBuddy all emit a lifecycle hook payload,
+but with different field names and different levels of detail. This module
+normalizes them into one canonical event, then delegates scoring to
+``headroom.py``.
 
 The hook stores no prompt text. It passes prompt text only to the configured
-local scorer and records an opaque hash of session_id + turn_id for idempotence.
+local scorer and records an opaque event id for idempotence.
 """
 
 from __future__ import annotations
@@ -15,6 +20,37 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+#: Field aliases per canonical name. Order matters: first match wins.
+FIELD_ALIASES = {
+    "prompt": ("prompt", "user_prompt", "userPrompt", "message", "text"),
+    "session_id": ("session_id", "sessionId", "conversation_id", "conversationId"),
+    "turn_id": ("turn_id", "turnId", "prompt_id", "promptId", "message_id", "messageId"),
+    "cwd": ("cwd", "working_directory", "workingDirectory"),
+    "permission_mode": ("permission_mode", "permissionMode"),
+    "mode": ("mode",),
+    "source": ("source", "origin"),
+    "transcript": ("transcript_path", "transcriptPath"),
+}
+#: Sources that identify a direct human turn.
+HUMAN_SOURCES = {"interactive", "user", "manual-user"}
+#: Non-interactive modes that must never be charged.
+NON_INTERACTIVE_MODES = {"goal", "task-automation"}
+#: Transcript path markers, used only when HEADROOM_AGENT is not set.
+TRANSCRIPT_MARKERS = (
+    (".claude/", "claude"),
+    (".codebuddy/", "workbuddy"),
+    (".workbuddy-ai/", "workbuddy"),
+    (".gemini/", "antigravity"),
+    (".codex/", "codex"),
+)
+ENV_MARKERS = (
+    ("CLAUDE_CONFIG_DIR", "claude"),
+    ("GEMINI_DIR", "antigravity"),
+    ("WORKBUDDY_HOME", "workbuddy"),
+    ("CODEX_HOME", "codex"),
+)
 
 
 def plugin_root() -> Path:
@@ -34,11 +70,58 @@ def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 
 
+def shared_headroom():
+    """The scorer module, for shared path defaults. Never breaks the hook."""
+    try:
+        scripts = str(scorer_path().parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import headroom  # noqa: PLC0415
+        return headroom
+    except Exception:
+        return None
+
+
 def state_path(_cwd: str | None) -> Path:
+    """One shared ledger across every agent."""
     configured = os.environ.get("HEADROOM_STATE_PATH")
     if configured:
         return Path(configured)
+    module = shared_headroom()
+    if module is not None:
+        return module.default_state_path()
     return codex_home() / "headroom" / "ledger.sqlite3"
+
+
+def first_string(event: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def detect_agent(event: dict) -> str:
+    """Which agent fired this hook.
+
+    Hook installers set HEADROOM_AGENT explicitly; the rest is a safety net for
+    a hand-written hook definition.
+    """
+    configured = os.environ.get("HEADROOM_AGENT")
+    if configured:
+        return configured
+    if first_string(event, FIELD_ALIASES["turn_id"]):
+        return "codex"
+    transcript = first_string(event, FIELD_ALIASES["transcript"])
+    if transcript:
+        normalized = transcript.replace("\\", "/")
+        for marker, name in TRANSCRIPT_MARKERS:
+            if marker in normalized:
+                return name
+    for variable, name in ENV_MARKERS:
+        if os.environ.get(variable):
+            return name
+    return "unknown"
 
 
 def scoring_backend() -> str:
@@ -66,13 +149,15 @@ def debug_hook_event(event: dict, chargeable: bool, outcome: str = "received",
     )
     if not target:
         return
+    prompt = first_string(event, FIELD_ALIASES["prompt"])
     record = {
         "at": datetime.now(timezone.utc).isoformat(),
         "outcome": outcome,
-        "has_prompt": isinstance(event.get("prompt"), str),
-        "prompt_length": len(event["prompt"]) if isinstance(event.get("prompt"), str) else 0,
-        "has_session_id": isinstance(event.get("session_id"), str) and bool(event["session_id"]),
-        "has_turn_id": isinstance(event.get("turn_id"), str) and bool(event["turn_id"]),
+        "agent": detect_agent(event),
+        "has_prompt": prompt is not None,
+        "prompt_length": len(prompt) if prompt else 0,
+        "has_session_id": first_string(event, FIELD_ALIASES["session_id"]) is not None,
+        "has_turn_id": first_string(event, FIELD_ALIASES["turn_id"]) is not None,
         "chargeable": chargeable,
         **{key: value for key, value in details.items()
            if key in {"returncode", "charged_points", "backend", "provider"}},
@@ -147,24 +232,45 @@ def start_display(cwd: str | None) -> None:
 
 
 def is_chargeable(event: dict) -> bool:
-    if not isinstance(event.get("prompt"), str) or not event["prompt"].strip():
+    if first_string(event, FIELD_ALIASES["prompt"]) is None:
         return False
-    if not isinstance(event.get("session_id"), str) or not event["session_id"]:
+    if first_string(event, FIELD_ALIASES["session_id"]) is None:
         return False
-    if not isinstance(event.get("turn_id"), str) or not event["turn_id"]:
+    # A turn identifier is optional: several agents have no such concept and get
+    # a per-session sequence instead. A *present but blank* one is malformed.
+    for key in FIELD_ALIASES["turn_id"]:
+        if key in event:
+            value = event[key]
+            if not isinstance(value, str) or not value:
+                return False
+            break
+    if first_string(event, FIELD_ALIASES["permission_mode"]) == "plan":
         return False
-    if event.get("permission_mode") == "plan":
+    if first_string(event, FIELD_ALIASES["mode"]) in NON_INTERACTIVE_MODES:
         return False
-    # A future Codex event may expose source/origin. If it does, fail closed
-    # for known non-interactive sources; absent source is treated as the main
-    # UserPromptSubmit event for compatibility with current releases.
-    source = event.get("source", event.get("origin"))
-    if source is not None and (not isinstance(source, str) or
-                              source not in {"interactive", "user", "manual-user"}):
+    # A future payload may expose source/origin. If it does, fail closed for
+    # known non-interactive sources; absent source is accepted for compatibility.
+    source = first_string(event, FIELD_ALIASES["source"])
+    if source is not None and source not in HUMAN_SOURCES:
         return False
     if os.environ.get("HEADROOM_HOOK_STRICT") == "1" and source is None:
         return False
     return True
+
+
+def turn_identity(agent: str, event: dict) -> list[str]:
+    """The scorer arguments that make this turn idempotent.
+
+    Prefer the agent's own turn id. Without one, hand headroom an opaque session
+    key and let it allocate a durable per-session sequence.
+    """
+    session_id = first_string(event, FIELD_ALIASES["session_id"]) or ""
+    turn_id = first_string(event, FIELD_ALIASES["turn_id"])
+    if turn_id:
+        digest = hashlib.sha256(f"{agent}:{session_id}:{turn_id}".encode("utf-8")).hexdigest()
+        return ["--event-id", f"hook-{digest[:40]}"]
+    key = hashlib.sha256(f"{agent}:{session_id}".encode("utf-8")).hexdigest()[:40]
+    return ["--session-key", key]
 
 
 def charge(event: dict) -> None:
@@ -178,21 +284,19 @@ def charge(event: dict) -> None:
     except (OSError, UnicodeError, ValueError, TypeError):
         debug_hook_event(event, True, "invalid_backend_config")
         return
-    digest = hashlib.sha256(
-        f"{event['session_id']}:{event['turn_id']}".encode("utf-8")
-    ).hexdigest()[:40]
+    agent = detect_agent(event)
+    prompt = first_string(event, FIELD_ALIASES["prompt"]) or ""
     # Keep standard input available; CREATE_NO_WINDOW hides console windows.
     executable = Path(sys.executable)
     if executable.name.lower() == "pythonw.exe":
         executable = executable.with_name("python.exe")
     command = [str(executable), str(scorer_path()), "--codex-home", str(codex_home()),
                "--state-path", str(state_path(event.get("cwd"))), "turn",
-               "--event-id", f"hook-{digest}", "--origin", "manual-user",
-               "--mode", "normal", "--backend",
-               backend]
+               *turn_identity(agent, event), "--origin", "manual-user",
+               "--mode", "normal", "--backend", backend, "--agent", agent]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(command, input=event["prompt"].encode("utf-8"),
+        result = subprocess.run(command, input=prompt.encode("utf-8"),
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=25, check=False, creationflags=creationflags)
         if result.returncode:

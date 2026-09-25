@@ -4,7 +4,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {spawnSync} = require('node:child_process');
 
-const result = spawnSync(process.env.HEADROOM_TEST_PYTHON || 'python', ['-c',
+// macOS and many Linux distributions ship only `python3`.
+const python = process.env.HEADROOM_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const result = spawnSync(python, ['-c',
   'import json,sys; sys.path.insert(0,sys.argv[1]); import headroom_dashboard as d; print(json.dumps({k+str(t):d.render_page(k,desktop=t) for k in d.TEXT for t in (False,True)}))',
   path.join(__dirname, '../scripts')], {encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}});
 assert.equal(result.status, 0, result.stderr || String(result.error));
@@ -23,9 +25,10 @@ const cases = [
 
 async function check(lang, storedMute = 'false', brokenStorage = false, desktop = false) {
   const page = pages[lang + (desktop ? 'True' : 'False')];
+  const TEXT_PROBE = lang === 'en' ? 'estimated from message count' : '按对话条数估算';
   if (lang === 'en') assert.doesNotMatch(page, /[\u3400-\u9fff]/);
-  const elements = Object.fromEntries(['collapse','language','sound-toggle','sound-icon','sound-label','mood-image','mood-video','mood-feedback','mood','value','meta','updated','fill','refresh'].map(id => [id, {
-    hidden: true, textContent: '', style: {}, classList: {add() {}, remove() {}},
+  const elements = Object.fromEntries(['collapse','language','sound-toggle','sound-icon','sound-label','mood-image','mood-video','mood-feedback','mood','value','meta','updated','fill','refresh','sources'].map(id => [id, {
+    hidden: true, textContent: '', innerHTML: '', style: {}, classList: {add() {}, remove() {}},
     getAttribute(name) {return this[name];}, addEventListener(event, callback) {
       const previous=this[event];
       this[event]=previous?((...args)=>{const result=previous(...args);return callback(...args)??result;}):callback;
@@ -34,7 +37,7 @@ async function check(lang, storedMute = 'false', brokenStorage = false, desktop 
     setAttribute(name,value) {this[name]=value;},
     async play() {this.paused=false;},
   }]));
-  let payload = {left_percent: 72.4, spent_points: 230.46, cap_points: 835};
+  let payload = {left_percent: 72.4, spent_points: 230.46, cap_points: 835, spent_origin: 'ledger'};
   let failure = null;
   let interval;
   let timerId=0;
@@ -115,6 +118,27 @@ async function check(lang, storedMute = 'false', brokenStorage = false, desktop 
     if (lang === 'en') assert.doesNotMatch(elements['mood-image'].alt, /[\u3400-\u9fff]/);
     assert.equal(elements.fill.style.width, percent + '%');
   }
+  // The estimate hint follows the origin: anything not wholly scored is a mix.
+  for (const [origin, expected] of [['counts', true], ['mixed', true], ['ledger', false]]) {
+    payload = {...payload, spent_origin: origin};
+    await interval();
+    const shown = elements.meta.textContent.includes(TEXT_PROBE);
+    assert.equal(shown, expected, 'origin=' + origin);
+  }
+  payload = {...payload, spent_origin: 'ledger'};
+  await interval();
+  // Per-agent totals come from the same window that produced the cap.
+  assert.equal(elements.sources.hidden, true); // The fixture has no agent data.
+  payload = {...payload, per_agent_counts: {codex: {a: 3}, claude: {a: 5}},
+             agents: [{name: 'codex', available: true}, {name: 'opencode', available: false}]};
+  await interval();
+  assert.equal(elements.sources.hidden, false);
+  assert.match(elements.sources.innerHTML, /<b>claude<\/b> 5 · <b>codex<\/b> 3/);
+  assert.match(elements.sources.innerHTML, /opencode ✕/);
+  assert.ok(elements.sources.innerHTML.startsWith(lang === 'en' ? 'Sources' : '来源'));
+  payload = {...payload, per_agent_counts: {}, agents: []};
+  await interval();
+  assert.equal(elements.sources.hidden, true);
   const video=elements['mood-video'], picture=elements['mood-image'];
   async function finishHop() {
     const pending=[...timers.values()];timers.clear();

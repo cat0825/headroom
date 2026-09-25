@@ -8,10 +8,10 @@ AI 有使用额度，你的大脑也该有。
 
 [English](README.md) · **简体中文**
 
-一个本地优先的 **Codex 插件 / Skill**，给大脑也配个日限额。<br>
-发一句话，扣一点虚构的脑力。
+一个本地优先的**多 agent 插件 / Skill**，给大脑也配个日限额。<br>
+发一句话，扣一点虚构的脑力 —— 在 Codex、Claude Code、opencode、Antigravity、WorkBuddy 里都算。
 
-[快速开始](#快速开始) · [任务栏托盘](#desktop-orb) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
+[支持的 agent](#支持的-agent) · [快速开始](#快速开始) · [任务栏托盘](#desktop-orb) · [界面语言](#界面语言) · [Jev 与 Laya](#scoring) · [隐私](#隐私)
 
 </div>
 
@@ -24,13 +24,59 @@ AI 有使用额度，你的大脑也该有。
 
 ## 聊天时会发生什么？
 
-- **按你的习惯给额度。** 取之前七个完整自然日中，用户消息最多的一天，消息数乘以二。这个窗口没有历史消息时，暂用两点。
-- **每条符合条件的消息扣一点。** 一轮直接互动得到 0–10 分；同一个 session/turn ID 重试只扣一次。
-- **跨会话共用一个余额。** 本地共享账本驱动百分比、进度条和表情。显示「已用 12.50 / 334 点」，不额外显示剩余多少点。
+- **按你的习惯给额度，跨 agent 合并计算。** 取之前七个完整自然日中用户消息最多的一天，把当天**所有** agent 的消息数相加，再乘以二。这个窗口没有历史消息时，暂用两点。**今天不在额度窗口内。**
+- **分子只算今天。** 消耗在本地零点重置，来源由 `HEADROOM_SPENT_SOURCE` 决定：
+
+  | 取值 | 行为 |
+  | --- | --- |
+  | `auto`（默认） | **按 agent 分别判断**：该 agent 今天有评分扣点就用扣点，否则用它的对话条数 |
+  | `ledger` | 只认评分扣点。没装钩子时消耗恒为 0，表盘显示 100% |
+  | `counts` | 始终按「今天条数 × 2」，不看账本 |
+
+  这个 ×2 和额度基准的 ×2 对齐，所以「今天和你最忙的一天一样忙」就等于剩余 0%。
+
+  `auto` 是**按 agent 分别判断，不是整天一刀切**。如果整天只切一次，那么 Codex 扣一次分就会把其他所有 agent 当天的对话全部抹掉 —— 只有一个 agent 装了钩子时，其他 agent 的对话会从那一刻起不再计入。按 agent 判断时，同一个 agent 内估算和评分**不会混算**，这是避免重复扣点的关键。
+- **跨会话、跨工具共用一个余额。** 本地共享账本驱动百分比、进度条和表情。显示「已用 12.50 / 334 点」，并附各 agent 的来源明细，不额外显示剩余多少点。
 - **刷新不扣点。** 面板每 10 秒自动刷新；刷新和切换界面语言都不扣点。不需要每发一句话就新建会话。
 - **收进任务栏。** 一个小 H 托盘图标，点击才展开用量卡片。直接读取本地账本，不用浏览器标签页，也不占桌面位置。
 
 自然日按 **Asia/Shanghai（UTC+8）** 划分。计算七天基准时会统计**所有**记录为 `userMessage` 的消息，包括自动任务；来源筛选只影响扣点，不影响额度基准。
+
+## 支持的 agent
+
+发现是自动的：headroom 逐个询问适配器本机是否存在它的历史，然后读取回答「有」的那些。agent 的任何细节都不会泄漏到账本、评分器或显示层。
+
+| agent | 历史来源 | 钩子 |
+| --- | --- | --- |
+| `codex` | `$CODEX_HOME/thread_history_1.sqlite` → `thread_items` | ✅ |
+| `claude` | `$CLAUDE_CONFIG_DIR/projects/*/*.jsonl`（回退到 `history.jsonl`） | — |
+| `opencode` | `$XDG_DATA_HOME/opencode/opencode.db` → `message` | — |
+| `antigravity` | `$GEMINI_DIR/antigravity/brain/*/.system_generated/logs/transcript_full.jsonl` | — |
+| `workbuddy` | `$WORKBUDDY_HOME/projects/*/*.jsonl` | — |
+
+```text
+python3 skills/headroom/scripts/headroom.py agents
+```
+
+列出每个适配器、本机是否可读、以及最近每天的计数。
+
+**会话记录不等于轮次日志。** Claude Code 会把工具结果当作 user 角色消息回放，所以 Claude 适配器要求正文是纯字符串或含 `text` 块，并剔除 `system`/`sdk` 来源和 sidechain 记录。Codex 和 opencode 直接查 SQL。如果按原始记录条数统计，除了 Codex 之外每个 agent 的额度基准都会失去意义。
+
+**不需要装钩子就能看到额度基准、各 agent 明细和消耗。** 显示层每次刷新都会重读本地历史，默认按今天的对话条数估算消耗。
+
+### 不改代码新增 agent
+
+在 `$HEADROOM_AGENTS_CONFIG`（默认 `~/.headroom/agents.json`）里声明：
+
+```json
+{"agents": [
+  {"name": "aider", "label": "Aider", "kind": "jsonl", "root": "~/.aider",
+   "glob": "**/*.history", "where": {"role": "user"},
+   "day_field": "timestamp", "day_format": "ms"}
+]}
+```
+
+`kind` 为 `jsonl` 或 `sqlite`；`day_format` 为 `ms`、`iso` 或 `epoch`。同名的声明式 agent 会覆盖内置适配器。
 
 ## 快速开始
 
@@ -81,6 +127,8 @@ test -e "${CODEX_HOME:-$HOME/.codex}/hooks.json" || sed "s#__PLUGIN_ROOT__#$PWD/
 ```
 
 然后同样在 Codex `/hooks` 中审查并信任这两条定义。在这些平台上，`SessionStart` 会启动网页面板。
+
+安装器**只装 Codex 的钩子**。其他 agent 的本地历史会参与额度基准和各 agent 明细；默认情况下，没有评分的对话也会按消息条数计入估算用量。它们的钩子可以手工添加：钩子会归一化各 agent 的载荷字段，并在设置了 `HEADROOM_AGENT` 时读取它，所以导出该变量的钩子定义可以直接工作。
 
 <a id="desktop-orb"></a>
 
@@ -149,20 +197,22 @@ python skills/headroom/scripts/headroom_dashboard.py --lang zh
 
 | 数据 | headroom 如何处理 |
 | --- | --- |
-| 过去的 Codex 对话 | 只查询消息类型 / 时间戳元数据来计数，不读取历史提示词正文 |
+| 过去的对话 | 只查询消息类型 / 时间戳元数据来计数，不读取历史提示词正文。agent 数据库一律以只读方式打开 |
 | 当前符合条件的提示词 | 在内存中传给 Mock 或配置的本地 Laya 服务 |
-| 扣点账本 | 保存不透明事件 ID、本地日期、数值分数和 provider，不保存提示词 |
+| 扣点账本 | 保存不透明事件 ID、本地日期、数值分数、provider 和 agent 名称，不保存提示词 |
 | 钩子诊断 | 只保留最近一次结果、时间、输入是否存在 / 长度以及评分元数据，不保存提示词或原始 session/turn ID |
 | 托盘 / 桌面显示 | 读取本地历史元数据和账本；动态卡片使用临时回环服务和打包素材，不调用云端评分；只保存位置 / 语言 / 静音偏好 |
 | 面板 | 仅监听 `127.0.0.1`；图片随仓库附带，不加载 CDN 或统计脚本 |
 
-默认共享账本是 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`），可用 `HEADROOM_STATE_PATH` 覆盖。不要公开运行时状态、诊断文件、Codex 历史或凭据。
+默认共享账本是 `~/.headroom/ledger.sqlite3`；若已存在旧版的 `$CODEX_HOME/headroom/ledger.sqlite3`（未设置时为 `~/.codex/headroom/ledger.sqlite3`）则沿用旧路径，避免凭空从零开始。可用 `HEADROOM_STATE_PATH` 覆盖。打开由 headroom 0.x 写入的账本时会原地迁移，并把已有记录归属到 `codex`。不要公开运行时状态、诊断文件、agent 历史或凭据。
 
 上述说明针对 **headroom**，不改变 Codex 自身的数据处理方式。单独部署的模型服务可能有自己的日志和联网行为，需要自行配置。未来若接云端 Jev，必须显式选择启用，并单独说明哪些数据会离开本机。
 
 ## 哪些对话会扣点？
 
 目标是只计算人主动参与的对话，不计算无人值守的工作。钩子会拒绝已知非交互来源和 plan 模式；手动评分 CLI 也会拒绝非 normal 模式或未确认来源。
+
+钩子会归一化各 agent 的载荷字段 —— `prompt`/`user_prompt`、`session_id`/`sessionId`、`turn_id`/`promptId`、`permission_mode`/`permissionMode` —— 并显式设置 `HEADROOM_AGENT`。Codex 提供 `turn_id`；Claude Code 和 Gemini 没有，因此 headroom 会从账本的 `hook_turns` 表分配一个持久的会话内序号。同一会话里两个不同的问题会扣两次；同一个轮次被重复投递只扣一次。`turn_id` 存在但为空视为载荷异常，直接跳过。
 
 **自动识别来源是尽力而为，不是精确保证。** 当前钩子载荷不一定能可靠标识 Goal、自动任务或子代理。为兼容正常对话，缺少来源字段时默认接受；`HEADROOM_HOOK_STRICT=1` 会拒绝这类消息，但也可能漏掉普通聊天。不要把这个娱乐性筛选当成审计级规则。
 

@@ -37,9 +37,13 @@ TEXT = {
     "zh": {
         "locale": "zh-CN", "heading": "脑力剩余", "loading": "读取中...",
         "refresh": "刷新", "spent": "已用", "points": "点", "updated": "最近刷新：",
+        "left": "剩余", "of_cap": "上限",
         "unavailable": "不可用", "read_failed": "读取失败，请稍后刷新",
         "invalid_data": "脑力数据不可用",
-        "status_error": "无法读取本机 Codex 历史或 headroom 账本",
+        "status_error": "无法读取本机 AI 历史或 headroom 账本",
+        "sources": "来源",
+        "from_counts": "（按对话条数估算）",
+        "no_agents": "未发现可读取的 agent 历史",
         "mood_full": "脑力充足：戴耳机的狗狗", "mood_low": "脑力低于30%：咆哮的狗狗",
         "mood_declining": "脑力下降中：流泪的猫猫",
         "play_next": "点击播放下一段大狗叫（有声音）；Esc 停止",
@@ -49,9 +53,13 @@ TEXT = {
     "en": {
         "locale": "en-US", "heading": "Headroom", "loading": "Loading...",
         "refresh": "Refresh", "spent": "Used", "points": "points", "updated": "Updated: ",
+        "left": "left", "of_cap": "of",
         "unavailable": "Unavailable", "read_failed": "Unable to load. Please refresh.",
         "invalid_data": "Headroom data is unavailable",
-        "status_error": "Unable to read local Codex history or the headroom ledger",
+        "status_error": "Unable to read local AI history or the headroom ledger",
+        "sources": "Sources",
+        "from_counts": " (estimated from message count)",
+        "no_agents": "No readable agent history found",
         "mood_full": "Plenty of headroom: dog wearing headphones",
         "mood_low": "Below 30%: barking dog",
         "mood_declining": "Headroom running low: crying cat",
@@ -80,6 +88,9 @@ h1{font-size:23px;margin:0}.value{font-size:56px;font-weight:750;line-height:1;c
 .sub{color:#61708c;font-size:13px;margin-top:6px}.track{height:12px;background:#e8edf6;border-radius:99px;margin:24px 0 16px;overflow:hidden}
 .fill{height:100%;width:0;background:linear-gradient(90deg,#58c7ab,#2563eb);border-radius:99px;transition:width .35s}
 .meta{font-size:15px;line-height:1.8}.small{font-size:12px;color:#61708c;margin-top:14px}
+.sources{font-size:12px;color:#61708c;margin-top:10px;line-height:1.7;word-break:break-word}
+.sources b{color:#14213d;font-weight:600}
+.sources .dead{color:#b42318}
 button{width:100%;border:0;border-radius:10px;background:#14213d;color:#fff;font:inherit;padding:12px;margin-top:24px;cursor:pointer}
 button:hover{background:#263b61}.error{color:#b42318}
 .card{position:relative}
@@ -96,6 +107,7 @@ button:hover{background:#263b61}.error{color:#b42318}
 <div id="value" class="value">--</div><div class="sub">left</div>
 <div class="track"><div id="fill" class="fill"></div></div>
 <div id="meta" class="meta">__LOADING__</div><div id="updated" class="small"></div>
+<div id="sources" class="sources" hidden></div>
 <div class="controls"><button id="refresh">__REFRESH__</button><button id="sound-toggle" type="button" aria-label="__MUTE__" aria-pressed="false" title="__SOUND_ON__"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4Z"/><path class="sound-waves" d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="sound-cross" d="m16 9 5 6m0-6-5 6"/></svg><span id="sound-label" hidden>__SOUND_ON__</span></button></div>
 </main><script>
 const TEXT=__TEXT__;
@@ -230,6 +242,26 @@ function updateMood(percent){
  picture.alt=description;
  document.getElementById('mood').hidden=false;
 }
+function escapeHtml(value){
+ return String(value).replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+}
+function updateSources(data){
+ // Per-agent totals come from the same window that produced the cap.
+ const box=document.getElementById('sources');
+ const per=data.per_agent_counts||{};
+ const agents=data.agents||[];
+ const parts=Object.keys(per)
+  .map(name=>({name,total:Object.values(per[name]).reduce((sum,value)=>sum+value,0)}))
+  .filter(item=>item.total>0)
+  .sort((left,right)=>right.total-left.total)
+  .map(item=>'<b>'+escapeHtml(item.name)+'</b> '+item.total);
+ for(const agent of agents){
+  if(agent&&agent.available===false){parts.push('<span class="dead">'+escapeHtml(agent.name)+' ✕</span>');}
+ }
+ if(!parts.length){box.hidden=true;return;}
+ box.innerHTML=TEXT.sources+' · '+parts.join(' · ');
+ box.hidden=false;
+}
 async function refresh(){
  const value=document.getElementById('value'), meta=document.getElementById('meta');
  let errorText=TEXT.read_failed;
@@ -242,10 +274,12 @@ async function refresh(){
   value.textContent=percent.toFixed(2)+'%';
   document.getElementById('fill').style.width=Math.max(0,Math.min(100,percent))+'%';
   updateMood(percent);
-  meta.textContent=TEXT.spent+' '+data.spent_points.toFixed(2)+' / '+data.cap_points+' '+TEXT.points;
+  meta.textContent=TEXT.spent+' '+data.spent_points.toFixed(2)+' / '+data.cap_points+' '+TEXT.points
+   +(data.spent_origin==='ledger'?'':TEXT.from_counts);
   document.getElementById('updated').textContent=TEXT.updated+new Date().toLocaleTimeString(TEXT.locale);
   meta.classList.remove('error');
- }catch(error){stopClip();feedback.hidden=true;value.textContent=TEXT.unavailable;meta.textContent=errorText;meta.classList.add('error');document.getElementById('mood').hidden=true;document.getElementById('fill').style.width='0%'}
+  updateSources(data);
+ }catch(error){stopClip();feedback.hidden=true;value.textContent=TEXT.unavailable;meta.textContent=errorText;meta.classList.add('error');document.getElementById('mood').hidden=true;document.getElementById('fill').style.width='0%';document.getElementById('sources').hidden=true}
 }
 document.getElementById('refresh').addEventListener('click',refresh);
 refresh();setInterval(refresh,10000);
@@ -306,19 +340,26 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--lang", choices=TEXT, default=os.environ.get("HEADROOM_LANG", "zh"),
                         help="dashboard language; default: HEADROOM_LANG or zh")
     parser.add_argument("--codex-home", type=Path,
-                        default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--state-path", type=Path, default=Path(os.environ.get(
-        "HEADROOM_STATE_PATH", str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "headroom" / "ledger.sqlite3"),
-    )))
+                        default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))),
+                        help="Codex home; overrides the codex adapter's default root")
+    parser.add_argument("--agent-home", action="append", metavar="NAME=PATH",
+                        help="override one agent's root; repeatable")
+    parser.add_argument("--agents", default=os.environ.get("HEADROOM_AGENTS", "auto"),
+                        help="'auto' to discover every installed agent, or a comma list")
+    parser.add_argument("--state-path", type=Path, default=headroom.default_state_path())
     args = parser.parse_args(argv)
     if args.lang not in TEXT:
         parser.error("HEADROOM_LANG must be zh or en")
     return args
 
 
-def create_handler(codex_home: Path, state_path: Path, lang: str = "zh", *, desktop: bool = False):
+def create_handler(codex_home: Path, state_path: Path, lang: str = "zh", *,
+                   desktop: bool = False, adapters: list | None = None):
     if lang not in TEXT:
         raise ValueError("Dashboard language must be zh or en")
+    # Default to the single Codex root so a bare (home, ledger) call stays
+    # hermetic; the CLI passes an explicitly discovered adapter list.
+    selected = list(adapters) if adapters else [headroom.CodexAdapter(root=codex_home)]
 
     class Handler(BaseHTTPRequestHandler):
         def serve_media(self, path: str, head_only: bool = False) -> None:
@@ -400,8 +441,8 @@ def create_handler(codex_home: Path, state_path: Path, lang: str = "zh", *, desk
             elif url.path == "/api/status":
                 try:
                     today = datetime.now(headroom.SHANGHAI).date()
-                    base = headroom.baseline(codex_home / "thread_history_1.sqlite", today)
-                    result = headroom.status(base, today, state_path)
+                    result = headroom.status(
+                        headroom.baseline_strict(selected, today), today, state_path)
                     body = json.dumps(result, ensure_ascii=False).encode("utf-8")
                     status = 200
                 except Exception:
@@ -427,8 +468,14 @@ def main() -> int:
     args = parse_args()
     if not 1024 <= args.port <= 65535:
         raise SystemExit("--port must be between 1024 and 65535")
-    with ThreadingHTTPServer(("127.0.0.1", args.port), create_handler(args.codex_home, args.state_path, args.lang)) as server:
+    try:
+        adapters = headroom.select_adapters(args.agents, args.agent_home, args.codex_home)
+    except (headroom.UnknownAgentError, ValueError) as exc:
+        raise SystemExit(str(exc))
+    handler = create_handler(args.codex_home, args.state_path, args.lang, adapters=adapters)
+    with ThreadingHTTPServer(("127.0.0.1", args.port), handler) as server:
         print(f"headroom dashboard: http://127.0.0.1:{args.port}/?lang={args.lang}", flush=True)
+        print(f"headroom agents: {', '.join(a.name for a in adapters) or 'none'}", flush=True)
         server.serve_forever()
     return 0
 
