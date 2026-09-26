@@ -23,6 +23,32 @@ try:
 except ImportError:  # e.g. Homebrew Python without python-tk
     tk = None
 
+
+def ensure_tcl_library() -> None:
+    """Point Tcl/Tk at their library directory before any Tk object exists.
+
+    A venv interpreter normally resolves ``tcl_library`` from its base prefix.
+    A process started detached (new session, no controlling terminal) can lose
+    that and die with "Cannot find a usable init.tcl" — which looks like a
+    missing Tk but is really a search-path problem. Setting the variables up
+    front makes every launch path behave the same.
+    """
+    if sys.platform != "darwin" or tk is None:
+        return
+    if os.environ.get("TCL_LIBRARY") and os.environ.get("TK_LIBRARY"):
+        return
+    for prefix in (Path(sys.base_prefix), Path(sys.prefix)):
+        lib = prefix / "lib"
+        tcl = sorted(lib.glob("tcl[89].*"))
+        tklib = sorted(lib.glob("tk[89].*"))
+        if tcl and tklib:
+            os.environ.setdefault("TCL_LIBRARY", str(tcl[-1]))
+            os.environ.setdefault("TK_LIBRARY", str(tklib[-1]))
+            return
+
+
+ensure_tcl_library()
+
 import headroom
 from headroom_dashboard import ASSET_DIR, TEXT as WEB_TEXT
 
@@ -61,16 +87,22 @@ def presentation(data: dict | None, lang: str) -> dict:
                 or not 0 <= values[0] <= 100 or values[1] < 0 or values[2] <= 0):
             data = None
     if data is None:
-        return {"percent": None, "value": "--", "orb": "--", "color": MUTED,
-                "meta": labels["desktop_error"], "image": None}
+        return {"percent": None, "value": "--", "value_number": "--", "orb": "--",
+                "color": MUTED, "meta": labels["desktop_error"], "image": None,
+                "left_label": labels["left"], "mood": labels["mood_full"]}
     percent, spent, cap = values
     mood = ("brain-full.png" if percent >= 70 else
             "brain-low.png" if percent < 30 else "brain-declining.webp")
+    mood_label = ("mood_full" if percent >= 70 else
+                  "mood_low" if percent < 30 else "mood_declining")
     color = BLUE if percent >= 70 else "#c87918" if percent >= 30 else "#dc4a59"
     # Floor the compact number: 0.4% must not look like 1%, 99.9% like 100%.
     orb = "<1" if 0 < percent < 1 else str(math.floor(percent))
-    return {"percent": percent, "value": f"{percent:.2f}%", "orb": orb,
-            "color": color, "image": mood,
+    return {"percent": percent, "value": f"{percent:.2f}%",
+            # The card draws the "%" separately so it can be set smaller.
+            "value_number": f"{percent:.2f}", "orb": orb,
+            "color": color, "image": mood, "mood": labels[mood_label],
+            "left_label": labels["left"],
             "meta": f"{labels['spent']} {spent:.2f} / {cap:g} {labels['points']}"}
 
 
@@ -307,9 +339,11 @@ class DesktopOrb:
                                        bg="white", fg=MUTED, bd=0, cursor="hand2", font=(UI_FONT, 17))
         self.collapse_button.place(x=271, y=15, width=28, height=30)
         self.refresh_button = flat_button(self.panel, command=self.request_refresh, relief="flat",
-                                      bg=INK, fg="white", activebackground="#263b61", activeforeground="white",
-                                      bd=0, cursor="hand2", font=(UI_FONT, 11))
-        self.refresh_button.place(x=32, y=251, width=256, height=32)
+                                      bg=BLUE, fg="white", activebackground="#1d4ed8", activeforeground="white",
+                                      bd=0, cursor="hand2", font=(UI_FONT, 12))
+        # Inset by the drawn pill's corner radius so the label's square corners
+        # stay inside the rounded shape.
+        self.refresh_button.place(x=36, y=257, width=CARD_W-72, height=20)
         self.paint()
         if visible and mode == "orb":
             root.deiconify()
@@ -426,29 +460,58 @@ class DesktopOrb:
                                     style="arc", outline="#58c7ab" if view["percent"] >= 70 else view["color"], width=3)
         self.orb.create_text(32, 27, text=view["orb"], fill="white", font=(UI_FONT, 16, "bold"))
         self.orb.create_text(32, 44, text="%", fill="#adc2e7", font=(UI_FONT, 9))
-        self.card.delete("all")
-        rounded(self.card, 1, 1, CARD_W-1, CARD_H-1, 18, fill="white", outline="#dce4ef")
-        self.card.create_text(24, 31, anchor="w", text=labels["heading"], fill=INK, font=(CJK_FONT, 14, "bold"))
-        self.card.create_text(24, 99, anchor="w", text=view["value"], fill=view["color"], font=(UI_FONT, 34, "bold"))
-        self.card.create_text(26, 137, anchor="w", text="left", fill=MUTED, font=(UI_FONT, 10))
+
+        card = self.card
+        card.delete("all")
+        rounded(card, 1, 1, CARD_W-1, CARD_H-1, 18, fill="white", outline="#e4e9f2")
+        # Header, then a hairline so the number reads as its own block.
+        card.create_text(24, 30, anchor="w", text=labels["heading"], fill=INK,
+                         font=(CJK_FONT, 14, "bold"))
+        card.create_line(24, 52, CARD_W-24, 52, fill="#eef1f6")
+
+        # The number and its unit are sized separately: a full-size "%" competes
+        # with the digits at this scale.
+        number = card.create_text(24, 86, anchor="w", text=view["value_number"],
+                                  fill=view["color"], font=(UI_FONT, 32, "bold"))
+        box = card.bbox(number)
+        if box:
+            card.create_text(box[2] + 3, 86, anchor="w", text="%",
+                             fill=view["color"], font=(UI_FONT, 17, "bold"))
+        card.create_text(25, 128, anchor="w", text=view["left_label"], fill=MUTED,
+                         font=(CJK_FONT, 11))
+
+        # Mood thumbnail on a soft plate so a transparent PNG still reads.
+        rounded(card, 236, 66, 296, 126, 14, fill="#f5f8fd", outline="")
         if view["image"]:
             picture = self.mood_image(view["image"])
             if picture:
-                self.card.create_image(268, 101, image=picture)
+                card.create_image(266, 96, image=picture)
             else:
-                self.card.create_text(267, 101, text=":)" if view["percent"] >= 70 else ":(" if view["percent"] >= 30 else ":O",
-                                      fill=view["color"], font=(UI_FONT, 24, "bold"))
-        self.card.create_line(28, 169, 292, 169, width=8, fill="#e8edf6", capstyle="round")
+                card.create_text(266, 96,
+                                 text=":)" if view["percent"] >= 70 else ":(" if view["percent"] >= 30 else ":O",
+                                 fill=view["color"], font=(UI_FONT, 24, "bold"))
+
+        # A thin, rounded meter instead of the old heavy bar.
+        card.create_line(28, 156, CARD_W-28, 156, width=6, fill="#e8edf6", capstyle="round")
         if view["percent"]:
-            self.card.create_line(28, 169, 28+264*view["percent"]/100, 169,
-                                  width=8, fill=view["color"], capstyle="round")
+            end = 28 + (CARD_W - 56) * min(100.0, view["percent"]) / 100
+            card.create_line(28, 156, max(31, end), 156, width=6, fill=view["color"],
+                             capstyle="round")
+
         meta = labels["loading"] if self.data is None and not self.failed else view["meta"]
-        self.card.create_text(24, 199, anchor="w", text=meta, fill=INK if not self.failed else "#b42318",
-                              font=(CJK_FONT, 10), tags="usage")
+        card.create_text(24, 182, anchor="w", text=meta,
+                         fill=INK if not self.failed else "#b42318",
+                         font=(CJK_FONT, 10), tags="usage")
         if self.updated and not self.failed:
-            self.card.create_text(24, 224, anchor="w", text=labels["updated"]+self.updated,
-                                  fill=MUTED, font=(CJK_FONT, 9))
-        rounded(self.card, 24, 245, 296, 289, 10, fill=INK, outline="")
+            card.create_text(24, 202, anchor="w", text=labels["updated"]+self.updated,
+                             fill=MUTED, font=(CJK_FONT, 9))
+        if view.get("mood") and not self.failed:
+            card.create_text(24, 222, anchor="w", text=view["mood"], fill=MUTED,
+                             font=(CJK_FONT, 9))
+
+        # The button is drawn here and the label sits inset by the corner radius,
+        # so its square corners stay inside the rounded shape.
+        rounded(card, 24, 245, CARD_W-24, 289, 12, fill=BLUE, outline="")
         self.language_button.configure(text=labels["switch"])
         self.refresh_button.configure(text=labels["refresh"])
         self.update_tray()
