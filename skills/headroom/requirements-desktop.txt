@@ -1,4 +1,4 @@
-# Optional Windows system-tray display; scoring and the web UI do not need these.
+# Optional tray display (Windows notification area or macOS menu bar); scoring and the web UI do not need these.
 pystray==0.19.5
 Pillow>=10
 pywebview==6.2.1; sys_platform == "win32"
