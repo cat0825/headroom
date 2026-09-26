@@ -9,10 +9,8 @@ import sys
 import threading
 from pathlib import Path
 
-#: Size the icon is authored at, in pixels. The menu bar draws it near 18pt,
-#: which is 36px at 1x and 72px on a Retina display, so the supplied artwork is
-#: handed over at its own size instead of being resampled on the way.
-ICON_PX = 72
+#: Size the icon is authored at, in pixels. The menu bar draws it near 18pt.
+ICON_PX = 64
 #: Menu bar items are tiny; this is the widest the ring may get.
 RING_INSET = 5
 
