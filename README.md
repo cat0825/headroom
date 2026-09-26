@@ -233,6 +233,8 @@ node skills/headroom/tests/test_dashboard_mood.js
 
 The JavaScript test needs Node.js and Python (`HEADROOM_TEST_PYTHON` can select the Python executable). Lifecycle smoke tests must set `HEADROOM_DISABLE_DASHBOARD=1` when using a temporary ledger. HTTP tests use ephemeral loopback ports, never the live dashboard port.
 
+GitHub Actions runs these checks on every push and pull request, and supports manual runs. The matrix covers Linux, Windows, and macOS with Python 3.10–3.13 and Node.js 22. Windows also reruns the Python suite with desktop dependencies on Python 3.13. Native tray and WebView2 smoke tests remain opt-in locally.
+
 </details>
 
 ## Contributors
